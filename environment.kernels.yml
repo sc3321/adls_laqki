@@ -1,0 +1,43 @@
+name: adls-quant-kernel
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - pip
+
+  # PyTorch CUDA runtime
+  - pytorch
+  - pytorch-cuda=12.1
+
+  # Build toolchain
+  - cmake
+  - ninja
+  - make
+  - git
+  - ccache
+  - gcc_linux-64
+  - gxx_linux-64
+
+  # CUDA compiler toolchain (nvcc)
+  - cuda-toolkit=12.4
+
+  # Dev/testing
+  - numpy
+  - pyyaml
+  - pytest
+  - rich
+
+  - pip:
+      - -e third_party/mase
+      - transformers
+      - accelerate
+      - safetensors
+      - sentencepiece
+      - datasets
+      - packaging
+      - pybind11
+

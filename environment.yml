@@ -1,0 +1,28 @@
+name: adls-quant-kernel
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - pip
+
+  # PyTorch (CPU build via pytorch channel)
+  - pytorch
+
+  # Core dev/testing
+  - numpy
+  - pyyaml
+  - pytest
+  - rich
+  - git
+
+  - pip:
+      - -e third_party/mase
+      - transformers
+      - accelerate
+      - safetensors
+      - sentencepiece
+      - datasets
+
