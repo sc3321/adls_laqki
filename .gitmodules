@@ -1,0 +1,3 @@
+[submodule "third_party/mase"]
+	path = third_party/mase
+	url = https://github.com/sc3321/mase.git
