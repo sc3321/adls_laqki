@@ -72,38 +72,35 @@ class QualityMinimizerConfig(SolverConfig):
 
 class ResourceMinimizerConfig(SolverConfig):
     """
-    Configuration for formulation (B): minimize hardware resource consumption subject to a quality degradation budget.
-        - The user specifies how much quality loss they will tolerate. 
-        - The solver finds the most compressed assignment (smallest memory, lowest latency) that stays within that tolerance.
+    Configuration for formulation (B): minimize hardware resource consumption subject to quality degradation budget
     
-    Use case: 
-        -> Production deployment : "I need <2% degradation, minimize cost"
-        -> Fleet optimization : "find the cheapest GPU that runs this model well"
+    User specifies how much quality loss they will tolerate
+    Solver finds most compressed assignment (smallest memory, lowest latency) that stays within tolerance
     
-    Implementation note 
-        - The quality constraint currently uses the proxy metric : sum[Omega_i x delta(b) x c_(i,b)] <= eps, which is an approx of actual quality loss. 
+    Use case:
+        Production deployment: I need <2% degradation, minimize cost
+        Fleet optimization: find the cheapest GPU that runs this model well
     
-    The proxy's accuracy degrades under aggressive compression.
-        - This is handled by the validation feedback loop, which performs bisection search on eps to find the value that corresponds to the user's actual quality budget. 
-        - The solver itself does not need to know about this calibration - it treats eps as a given number.
+    Implementation note:
+        Quality constraint uses proxy metric: sum[Omega_i * delta(b) * c_(i,b)] <= eps
+        This is an approximation of actual quality loss
+        
+        Proxy accuracy degrades under aggressive compression
+        Handled by validation feedback loop which performs bisection search on eps to find 
+        value corresponding to user actual quality budget
+        Solver treats eps as a given number
     """
     solver_name: str = "resource_minimizer"
     
-    # Quality budget (proxy scale - calibrated by the feedback loop)
-    quality_budget_proxy: float             # eps: max (sum[ Omega_i x delta(b) x c_{i,b}])
+    quality_budget_proxy: float
     
-    # Resource objective weights - relative importance of each resource dimension in the combined objective
-    # Default: memory-only 
     resource_weights: dict[str, float] = {
         "memory": 1.0,
-        "latency": 0.0,  # Set >0 to include latency in objective
+        "latency": 0.0,
     }
     
-    # Physical feasibility bound - even when minimizing resources, the model must physically fit on the GPU
-    # -> This is distinct from the quality budget
-    hard_memory_cap_gb: Optional[float] = None  # Defaults to GPU physical memory
+    hard_memory_cap_gb: Optional[float] = None
     
-    # Batch size for latency terms (if latency weight > 0)
     target_batch_size: int = 1
 
 
@@ -111,24 +108,23 @@ class ParetoExplorerConfig(SolverConfig):
     """
     Configuration for multi-objective Pareto frontier exploration
     
-    Does not commit to either formulation :
-        - Explores the full accuracy-vs-resource tradeoff space using Bayesian optimization
-        - Returns a set of Pareto-optimal configurations
+    Does not commit to either formulation
+    Explores full accuracy-vs-resource tradeoff space using Bayesian optimization
+    Returns a set of Pareto-optimal configurations
     
-    Use case: 
-        -> Understanding tradeoffs before committing to a deployment point 
-        -> Generating data for reports/papers
-        -> Informing constraint selection for subsequent ILP runs
+    Use case:
+        Understanding tradeoffs before committing to deployment point
+        Generating data for reports/papers
+        Informing constraint selection for subsequent ILP runs
     """
     solver_name: str = "pareto_explorer"
     
     num_trials: int = 200
-    parallelism: int = 4 # Parallel BO evaluations
+    parallelism: int = 4
     objectives: dict[str, str] = {
-        "quality_cost": "minimize", # Proxy quality degradation
+        "quality_cost": "minimize",
         "memory_gb": "minimize",
     }
-    outcome_constraints: list[str] = []     # e.g., ["memory_gb <= 80"]
+    outcome_constraints: list[str] = []
     
-    # Physical feasibility
     hard_memory_cap_gb: Optional[float] = None

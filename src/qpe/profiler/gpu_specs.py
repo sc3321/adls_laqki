@@ -6,7 +6,7 @@ class GPUSpec(BaseModel) :
         HW Spec for a given GPU Architecture
     """
     name: str
-    compute_capability: tuple[int, int]      # e.g., (9, 0) for H100
+    compute_capability: tuple[int, int]      # (9, 0) for H100
     memory_gb: float
     memory_bandwidth_tb_s: float             # HBM bandwidth
 

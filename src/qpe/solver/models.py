@@ -7,7 +7,7 @@ from .types import Precision
 class LayerDescriptor(BaseModel) :
     """
     Complete description of a single quantizable layer, combining sensitivity scoring outputs and hardware profiling outputs
-    This is the per-layer "row" in the solver's input table. It contains all the information any solver might need, without dictating how that information is used (as objective coefficient vs. constraint bound)
+    This is the per-layer row in the solver's input table. It contains all the information any solver might need, without dictating how that information is used (as objective coefficient vs. constraint bound)
     """
 
     model_config = ConfigDict(frozen = True)
@@ -40,8 +40,8 @@ class LayerDescriptor(BaseModel) :
 
 class SolverInput(BaseModel) :
     """
-    Contains everything needed to formulate the optimization problem under a given formulation 
-    The solver selects which fields become objectives and which become constraints based on its own logic
+    Contains everything needed to formulate optimization problem under a given formulation
+    Solver selects which fields become objectives and which become constraints based on its own logic
     """
 
     model_config = ConfigDict(frozen=True)
@@ -75,8 +75,8 @@ class LayerAssignment(BaseModel) :
 
 class SolverOutput(BaseModel) :
     """
-    The solver populates both resource totals and quality estimates regardless of which was the objective and which was the constraint
-    This enables the Validator to check all dimensions unconditionally
+    Solver populates both resource totals and quality estimates regardless of which was objective and constraint
+    Enables Validator to check all dimensions unconditionally
     """
 
     model_config = ConfigDict(frozen=True)
@@ -85,23 +85,21 @@ class SolverOutput(BaseModel) :
 
     total_estimated_quality_cost : float 
     total_memory_bytes : int
-    total_memory_with_kv_bytes : int # Weights + KV cache at chosen kv_dtype
+    total_memory_with_kv_bytes : int
     total_latency_us : float
     average_bitwidth : float 
 
     solver_name: str 
-    solver_status: str   # optimal, feasible, infeasible, timeout
+    solver_status: str
     solve_time_seconds: float
-    formulation_used: str  # quality_minimizing | resource_minimizing | pareto
+    formulation_used: str
     
-    # KV cache decision 
     kv_cache_dtype: str 
     
-    # Layer ranking (for diagnostics / visualization) 
-    sensitivity_ranking: List[str] # Layer names, most-sensitive first
+    sensitivity_ranking: List[str]
     
     def to_assignment_dict(self) -> Dict[str, str]:
-        """Convenience: {layer_name: precision_string} for export."""
+        """Convenience: {layer_name: precision_string} for export"""
         return {a.layer_name: a.assigned_precision.value for a in self.assignments}
 
 

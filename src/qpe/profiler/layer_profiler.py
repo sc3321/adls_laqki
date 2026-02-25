@@ -58,17 +58,16 @@ class LayerProfiler:
         """
         Profile all layers, return resource data keyed by layer name
         
-        Returns 
-            
-            <layer_name> : {
-                "memory_bytes": {precision: bytes},
-                "latency_us": {precision: microseconds},
-                "peak_memory_bytes": {precision: bytes},
-                "kernel_name": {precision: kernel_string},
-                "is_memory_bound": {precision: bool},
+        Returns:
+            <layer_name>: {
+                memory_bytes: {precision: bytes},
+                latency_us: {precision: microseconds},
+                peak_memory_bytes: {precision: bytes},
+                kernel_name: {precision: kernel_string},
+                is_memory_bound: {precision: bool},
             }
         
-        This data is merged into LayerDescriptor by the Pipeline Orchestrator
+        Data is merged into LayerDescriptor by Pipeline Orchestrator
         """
         ...
     
