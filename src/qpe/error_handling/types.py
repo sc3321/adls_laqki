@@ -1,0 +1,2 @@
+class InfeasibleError(BaseException) :
+    pass 
