@@ -1,7 +1,7 @@
 from .gpu_specs import GPUSpec
 import torch.nn as nn
 from solver.types import Precision 
-from typing import Dict 
+from typing import Dict, List
 
 class LayerProfiler:
     """
@@ -42,7 +42,7 @@ class LayerProfiler:
     def __init__(
         self,
         gpu_spec: GPUSpec,
-        batch_sizes: list[int] = [1, 4, 16, 64],
+        batch_sizes: List[int] = [1, 4, 16, 64],
         num_warmup: int = 50,
         num_measurements: int = 200,
         cache_dir: str = ".qpe_cache/profiles",
@@ -52,9 +52,9 @@ class LayerProfiler:
     def profile_all_layers(
         self,
         model: nn.Module,
-        layer_names: list[str],
+        layer_names: List[str],
         target_batch_size: int = 1,
-    ) -> dict[str, dict]:
+    ) -> Dict[str, Dict]:
         """
         Profile all layers, return resource data keyed by layer name
         
