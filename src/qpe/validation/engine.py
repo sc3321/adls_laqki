@@ -1,5 +1,6 @@
 from .config import ValidationConfig
 from solver.models import SolverOutput, FeedbackSignal
+
 class ValidationEngine:    
     def __init__(self, config: ValidationConfig):
         self.config = config
@@ -18,7 +19,7 @@ class ValidationEngine:
         """
         Apply quantization config, evaluate quality, return FeedbackSignal
         
-        The FeedbackSignal contains:
+        FeedbackSignal contains:
         - Measured perplexity (absolute and relative to FP16)
         - Measured benchmark scores (Stage 2 only)
         - Per-layer KL divergence
@@ -33,9 +34,9 @@ class ValidationEngine:
         self, model_id: str, assignment_dict: dict[str, str]
     ) -> str:
         """
-        Apply per-layer mixed-precision quantization via LLM Compressor.
-        Returns path to quantized model.
+        Apply per-layer mixed-precision quantization via LLM Compressor
+        Returns path to quantized model
         
-        LLM Compressor recipe supports non-uniform quantization: different layers can have different QuantizationModifier configs
+        LLM Compressor recipe supports non-uniform quantization - different layers can have different QuantizationModifier configs
         """
         ...
