@@ -1,10 +1,6 @@
 from .config import ValidationConfig
 from solver.models import SolverOutput, FeedbackSignal
-class ValidationEngine:
-    """
-    Solver-agnostic validation. Consumes SolverOutput, produces FeedbackSignal
-    """
-    
+class ValidationEngine:    
     def __init__(self, config: ValidationConfig):
         self.config = config
         self._fp16_baseline: dict | None = None
