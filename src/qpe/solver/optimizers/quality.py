@@ -27,10 +27,12 @@ Reference: HAWQ-V3 [Yao et al., ICML 2021] - proved ILP with Hessian trace is 12
 """
 import pulp
 import numpy as np
+
+from qpe.solver.optimizers.base import ILPSolverMixin
 from ..config import QualityMinimizerConfig
 from ..models import SolverInput, SolverOutput, LayerDescriptor
 
-class ILPQualityMinimizer:
+class ILPQualityMinimizer(ILPSolverMixin):
     """Minimize quality loss subject to hardware budgets."""
     
     def __init__(self, config: QualityMinimizerConfig):
@@ -39,7 +41,10 @@ class ILPQualityMinimizer:
     @property
     def name(self) -> str:
         return "ILPQualityMinimizer"
-    
+        
+    def _formulation_name(self) -> str:
+        return "quality_minimizing"
+
     def solve(self, input: SolverInput) -> SolverOutput:
         # Compute composite sensitivity per layer
         sensitivities = self._aggregate_sensitivities(input.layers)
