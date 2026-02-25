@@ -36,10 +36,12 @@ Reference: CLADO [Deng et al., DAC 2025] demonstrated both formulations on ResNe
 """
 import pulp
 import numpy as np
+
+from qpe.solver.optimizers.base import ILPSolverMixin
 from ..models import SolverInput, SolverOutput, LayerDescriptor
 from ..config import ResourceMinimizerConfig
 
-class ILPResourceMinimizer:
+class ILPResourceMinimizer(ILPSolverMixin):
     """Minimize resource usage subject to quality budget."""
     
     def __init__(self, config: ResourceMinimizerConfig):
@@ -48,7 +50,10 @@ class ILPResourceMinimizer:
     @property
     def name(self) -> str:
         return "ILPResourceMinimizer"
-    
+        
+    def _formulation_name(self) -> str:
+        return "resource_minimizing"
+
     def solve(self, input: SolverInput) -> SolverOutput:
         sensitivities = self._aggregate_sensitivities(input.layers)
         candidates = self._build_candidate_set(input)
