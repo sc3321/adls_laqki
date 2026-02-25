@@ -9,12 +9,15 @@ from solver import (
     SolverFactory,
     LayerDescriptor
 )
+from solver.types import Precision
+from solver.models import FeedbackSignal
 from validation.config import ValidationConfig 
 from calibration.manager import CalibrationDataManager 
 from export import ConfigurationExporter, ExportResult
 from validation.engine import ValidationEngine 
 from scorer.base import SensitivityScorer 
 from profiler import LayerProfiler, GPUSpec
+from utils.model_utils import load_model, get_quantizable_layers
 
 class PipelineConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -29,8 +32,28 @@ class PipelineConfig(BaseModel):
     wandb_project: str = "qpe"
     wandb_enabled: bool = True
 
-class PipelineResult(BaseModel) :
-    solver_output : SolverOutput 
+class PipelineResult(BaseModel):
+    """
+    Complete output of a QPE pipeline run
+    
+    Bundles the solver decision, validator assessment, exported artifact metadata, and pipeline execution diagnostics
+    """
+    model_config = ConfigDict(frozen=True)
+    schema_version: int = 2
+    
+    solver_output: SolverOutput
+    validation: FeedbackSignal 
+    export: ExportResult
+    
+    iterations_used: int
+    total_wall_time_seconds: float
+    scoring_time_seconds: float
+    profiling_time_seconds: float
+    solving_time_seconds: float
+    validation_time_seconds: float
+    
+    pipeline_config: PipelineConfig
+    warnings: list[str] = [] 
 
 
 class Pipeline:
@@ -82,9 +105,9 @@ class Pipeline:
             if solver_output.solver_status == "infeasible":
                 from error_handling.types import InfeasibleError
                 raise InfeasibleError(
-                    "No valid assignment exists under current constraints. "
-                    "Consider relaxing memory budget, quality budget, or "
-                    "unpinning forced-FP16 layers."
+                    "No valid assignment exists under current constraints - "
+                    "consider relaxing memory budget, quality budget, or "
+                    "unpinning forced-FP16 layers"
                 )
             
             feedback = self.validator.validate(
@@ -92,7 +115,6 @@ class Pipeline:
             )
             
             if feedback.passed:
-                # full benchmark validation
                 full_feedback = self.validator.validate(
                     self.config.model_id, solver_output, stage="full"
                 )
@@ -107,7 +129,6 @@ class Pipeline:
                 f"(budget: {self.config.validation.max_perplexity_increase_pct}%)"
             )
         
-        # Phase 3: Export (formulation-independent)
         output = self.exporter.export(solver_output, self.config.model_id, ...)
         
         return PipelineResult(
@@ -144,8 +165,8 @@ class Pipeline:
 
     def _assemble_solver_input(
         self,
-        scorer_output: list[LayerDescriptor],  # Sensitivity fields populated
-        profiler_output: Dict[str, Dict],      # Resource fields
+        scorer_output: list[LayerDescriptor],
+        profiler_output: Dict[str, Dict],
         model_id: str,
         gpu_spec: GPUSpec,
     ) -> SolverInput:
@@ -184,3 +205,39 @@ class Pipeline:
             max_sequence_length=...,
             max_batch_size=...,
         )
+
+    def _filter_precisions(self, gpu_spec: GPUSpec) -> list[Precision]:
+        """
+        Determine which Precision candidates are available on target GPU
+        
+        Filters solver config precision_candidates by GPU hardware capabilities (compute capability determines FP8/FP4 support) and kernel availability
+        
+        Ensures solver never proposes a precision that would fail at runtime
+        """
+        available = []
+        candidate_set = set(p.value for p in self.config.solver.precision_candidates)
+        
+        for precision in Precision:
+            if precision.value not in candidate_set:
+                continue
+            
+            if precision == Precision.FP16:
+                available.append(precision)
+            elif precision == Precision.W8A8_FP8:
+                if gpu_spec.supports_fp8 and "W8A8_FP8" in gpu_spec.available_kernels:
+                    available.append(precision)
+            elif precision == Precision.W8A8_INT8:
+                if gpu_spec.supports_int8_tensor_core and "W8A8_INT8" in gpu_spec.available_kernels:
+                    available.append(precision)
+            elif precision == Precision.W4A16:
+                if "W4A16" in gpu_spec.available_kernels:
+                    available.append(precision)
+        
+        if len(available) < 2:
+            raise ValueError(
+                f"GPU {gpu_spec.name} supports fewer than 2 precision candidates "
+                f"({[p.value for p in available]}) - mixed-precision optimization "
+                f"requires at least 2 options - check GPU spec and kernel availability"
+            )
+        
+        return available
