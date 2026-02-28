@@ -27,10 +27,13 @@ __all__ = [
 
 
 
-from optimizers.quality import ILPQualityMinimizer
-from optimizers.resources import ILPResourceMinimizer
-from optimizers.pareto_explorer import ParetoExplorer
+try:
+    from .optimizers.quality import ILPQualityMinimizer
+    from .optimizers.resources import ILPResourceMinimizer
+    from .optimizers.pareto_explorer import ParetoExplorer
 
-SolverFactory.register("quality_minimizer", ILPQualityMinimizer)
-SolverFactory.register("resource_minimizer", ILPResourceMinimizer)
-SolverFactory.register("pareto_explorer", ParetoExplorer)
+    SolverFactory.register("quality_minimizer", ILPQualityMinimizer)
+    SolverFactory.register("resource_minimizer", ILPResourceMinimizer)
+    SolverFactory.register("pareto_explorer", ParetoExplorer)
+except ImportError:
+    pass  # pulp not installed; solvers unavailable but package is importable
