@@ -13,16 +13,16 @@ class GPUSpec(BaseModel) :
     # Precision support flags (determined by SM ver)
     supports_fp8 : bool
     supports_fp4 : bool
-    supports_int8_tensor_core : bool
-    supports_in4_tensor_core : bool
+    supports_int8_tensor_core: bool
+    supports_int4_tensor_core: bool = False
 
-    # Peak throuput by prec 
+    # Peak throughput by precision
     peak_fp16_tflops: float
-    peak_fp8_tflops: Optional[float] 
+    peak_fp8_tflops: Optional[float] = None
     peak_int8_tops: float
-    peak_int4_tops: Optional[float] 
+    peak_int4_tops: Optional[float] = None
 
-    avilable_kernels : Dict[str, List[str]]
+    available_kernels: Dict[str, List[str]]
     # Example struct :
     # {
     #   "W4A16"    : ["marlin", "exllamav2", "cutlass"],
