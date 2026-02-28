@@ -127,10 +127,10 @@ class TestTimeLayer:
 
     @requires_gpu
     def test_larger_layer_slower(self):
-        small = nn.Linear(32, 32, bias=False).half()
-        large = nn.Linear(512, 512, bias=False).half()
-        t_s = _time_layer(small, torch.randn(1, 1, 32,  dtype=torch.float16), 2, 10, GPU)
-        t_l = _time_layer(large, torch.randn(1, 1, 512, dtype=torch.float16), 2, 10, GPU)
+        small = nn.Linear(64,   64,   bias=False).half()
+        large = nn.Linear(4096, 4096, bias=False).half()
+        t_s = _time_layer(small, torch.randn(1, 1, 64,   dtype=torch.float16), 2, 20, GPU)
+        t_l = _time_layer(large, torch.randn(1, 1, 4096, dtype=torch.float16), 2, 20, GPU)
         assert t_l > t_s
 
 
@@ -268,7 +268,7 @@ class TestGPURegistry:
     @pytest.mark.parametrize("key", ["A100_80GB", "H100_SXM", "RTX_4090", "T4"])
     def test_registry_entries_are_valid(self, key):
         spec = GPU_REGISTRY[key]
-        assert spec.compute_capability[0] >= 8
+        assert spec.compute_capability[0] >= 7
         assert spec.memory_gb > 0
         assert Precision.FP16.value in spec.available_kernels
 
