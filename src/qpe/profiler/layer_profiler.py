@@ -77,6 +77,13 @@ def _quantize_layer(layer: nn.Module, precision: Precision, gpu_spec: GPUSpec) -
             int8_dynamic_activation_int8_weight,
             quantize_,
         )
+    except ImportError:
+        log.warning(
+            "torchao not installed; latency for %s will be measured as FP16.", precision.value
+        )
+        return layer
+
+    try:
         q = copy.deepcopy(layer)
         if precision == Precision.W8A8_FP8:
             quantize_(q, float8_weight_only())
@@ -85,9 +92,9 @@ def _quantize_layer(layer: nn.Module, precision: Precision, gpu_spec: GPUSpec) -
         elif precision == Precision.W4A16:
             quantize_(q, int4_weight_only(group_size=128))
         return q
-    except ImportError:
+    except Exception as e:
         log.warning(
-            "torchao not installed; latency for %s will be measured as FP16.", precision.value
+            "quantize_ failed for %s (%s); using FP16 layer for latency.", precision.value, e
         )
         return layer
 
