@@ -287,7 +287,7 @@ class LayerProfiler:
 
         for prec in self._available_precisions:
             pv = prec.value
-            q_layer = _quantize_layer(layer, prec, self.gpu_spec)
+            q_layer = _quantize_layer(layer.half(), prec, self.gpu_spec)
 
             result["memory_bytes"][pv]      = _weight_bytes(layer, pv)
             result["latency_us"][pv]        = _time_layer(
