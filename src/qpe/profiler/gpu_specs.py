@@ -67,4 +67,16 @@ GPU_REGISTRY: dict[str, GPUSpec] = {
             "FP16": ["cublas"],
         },
     ),
+    "T4": GPUSpec(
+        name="NVIDIA Tesla T4", compute_capability=(7, 5),
+        memory_gb=16.0, memory_bandwidth_tb_s=0.32,
+        supports_fp8=False, supports_fp4=False, supports_int8_tensor_core=True,
+        supports_int4_tensor_core=True,
+        peak_fp16_tflops=65.0, peak_int8_tops=130.0, peak_int4_tops=260.0,
+        available_kernels={
+            "W4A16": ["marlin", "exllamav2", "autogptq"],
+            "W8A8_INT8": ["cutlass", "cublas"],
+            "FP16": ["cublas", "cutlass"],
+        },
+    ),
 }

@@ -24,23 +24,27 @@ from qpe.solver.types import Precision
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 MOCK_GPU = GPUSpec(
-    name="Test GPU",
-    compute_capability=(8, 0),
-    memory_gb=40.0,
-    memory_bandwidth_tb_s=2.0,
+    name="NVIDIA Tesla T4",
+    compute_capability=(7, 5),
+    memory_gb=16.0,
+    memory_bandwidth_tb_s=0.32,
     supports_fp8=False,
     supports_fp4=False,
     supports_int8_tensor_core=True,
-    peak_fp16_tflops=312.0,
-    peak_int8_tops=624.0,
+    supports_int4_tensor_core=True,
+    peak_fp16_tflops=65.0,
+    peak_int8_tops=130.0,
+    peak_int4_tops=260.0,
     available_kernels={
-        "FP16":       ["cublas"],
-        "W8A8_INT8":  ["cutlass"],
-        "W4A16":      ["autogptq"],
+        "FP16":       ["cublas", "cutlass"],
+        "W8A8_INT8":  ["cutlass", "cublas"],
+        "W4A16":      ["marlin", "exllamav2", "autogptq"],
     },
 )
 
 CPU = torch.device("cpu")
+GPU = torch.device("cuda")
+requires_gpu = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 
 
 @pytest.fixture
@@ -114,34 +118,38 @@ class TestIsMemoryBound:
 # ── _time_layer ───────────────────────────────────────────────────────────────
 
 class TestTimeLayer:
+    @requires_gpu
     def test_returns_positive_microseconds(self):
-        layer = nn.Linear(64, 64, bias=False)
-        inputs = torch.randn(1, 1, 64)
-        t = _time_layer(layer, inputs, num_warmup=1, num_measurements=3, device=CPU)
+        layer = nn.Linear(64, 64, bias=False).half()
+        inputs = torch.randn(1, 1, 64, dtype=torch.float16)
+        t = _time_layer(layer, inputs, num_warmup=1, num_measurements=3, device=GPU)
         assert t > 0.0
 
+    @requires_gpu
     def test_larger_layer_slower(self):
-        small = nn.Linear(32, 32, bias=False)
-        large = nn.Linear(512, 512, bias=False)
-        t_s = _time_layer(small, torch.randn(1, 1, 32),  2, 10, CPU)
-        t_l = _time_layer(large, torch.randn(1, 1, 512), 2, 10, CPU)
+        small = nn.Linear(32, 32, bias=False).half()
+        large = nn.Linear(512, 512, bias=False).half()
+        t_s = _time_layer(small, torch.randn(1, 1, 32,  dtype=torch.float16), 2, 10, GPU)
+        t_l = _time_layer(large, torch.randn(1, 1, 512, dtype=torch.float16), 2, 10, GPU)
         assert t_l > t_s
 
 
 # ── _measure_peak_memory ──────────────────────────────────────────────────────
 
 class TestMeasurePeakMemory:
+    @requires_gpu
     def test_returns_positive_bytes(self):
-        layer = nn.Linear(64, 64, bias=False)
-        inputs = torch.randn(1, 1, 64)
-        mem = _measure_peak_memory(layer, inputs, CPU)
+        layer = nn.Linear(64, 64, bias=False).half()
+        inputs = torch.randn(1, 1, 64, dtype=torch.float16)
+        mem = _measure_peak_memory(layer, inputs, GPU)
         assert mem > 0
 
+    @requires_gpu
     def test_larger_layer_more_memory(self):
-        small = nn.Linear(32,  32,  bias=False)
-        large = nn.Linear(512, 512, bias=False)
-        m_s = _measure_peak_memory(small, torch.randn(1, 1, 32),  CPU)
-        m_l = _measure_peak_memory(large, torch.randn(1, 1, 512), CPU)
+        small = nn.Linear(32,  32,  bias=False).half()
+        large = nn.Linear(512, 512, bias=False).half()
+        m_s = _measure_peak_memory(small, torch.randn(1, 1, 32,  dtype=torch.float16), GPU)
+        m_l = _measure_peak_memory(large, torch.randn(1, 1, 512, dtype=torch.float16), GPU)
         assert m_l > m_s
 
 
@@ -257,7 +265,7 @@ class TestProfileAllLayers:
 # ── GPU_REGISTRY sanity ───────────────────────────────────────────────────────
 
 class TestGPURegistry:
-    @pytest.mark.parametrize("key", ["A100_80GB", "H100_SXM", "RTX_4090"])
+    @pytest.mark.parametrize("key", ["A100_80GB", "H100_SXM", "RTX_4090", "T4"])
     def test_registry_entries_are_valid(self, key):
         spec = GPU_REGISTRY[key]
         assert spec.compute_capability[0] >= 8
