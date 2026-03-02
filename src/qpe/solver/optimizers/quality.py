@@ -29,10 +29,11 @@ import pulp
 import numpy as np
 
 from qpe.solver.optimizers.base import ILPSolverMixin
+from ..protocol import QuantizationSolver
 from ..config import QualityMinimizerConfig
 from ..models import SolverInput, SolverOutput, LayerDescriptor
 
-class ILPQualityMinimizer(ILPSolverMixin):
+class ILPQualityMinimizer(QuantizationSolver, ILPSolverMixin):
     """Minimize quality loss subject to hardware budgets."""
     
     def __init__(self, config: QualityMinimizerConfig):
@@ -99,28 +100,3 @@ class ILPQualityMinimizer(ILPSolverMixin):
         # Extract solution
         return self._build_output(prob, c, input, sensitivities, candidates)
     
-    def _aggregate_sensitivities(self, layers: list[LayerDescriptor]) -> np.ndarray:
-        """
-        Combine raw sensitivity signals into a single composite score per layer.
-        
-        Uses weighted geometric mean after min-max normalization.
-        Geometric mean is scale-invariant - used because signals span different scales (Hessian trace ~1e-3 to 1e+3, kurtosis ~1 to 1800+)
-        """
-        signals = np.zeros((len(layers), len(self.config.sensitivity_weights)))
-        weights = np.array(list(self.config.sensitivity_weights.values()))
-        
-        for j, (signal_name, _) in enumerate(self.config.sensitivity_weights.items()):
-            raw = np.array([getattr(layer, signal_name) for layer in layers])
-            # Min-max normalize to [eps, 1.0] (eps avoids log(0) in geometric mean)
-            mn, mx = raw.min(), raw.max()
-            if mx > mn:
-                signals[:, j] = (raw - mn) / (mx - mn) * 0.99 + 0.01
-            else:
-                signals[:, j] = 0.5
-        
-        # Weighted geometric mean: exp(Sum w_j x log(s_j))
-        log_signals = np.log(signals)
-        composite = np.exp(log_signals @ weights / weights.sum())
-        return composite
-    
-    # ... helper methods _build_candidate_set, _layer_index, _build_output ...

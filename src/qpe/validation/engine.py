@@ -1,5 +1,6 @@
 from .config import ValidationConfig
-from solver.models import SolverOutput, FeedbackSignal
+from ..solver.models import SolverOutput, FeedbackSignal
+import torch.nn as nn
 
 class ValidationEngine:    
     def __init__(self, config: ValidationConfig):
@@ -12,6 +13,7 @@ class ValidationEngine:
     
     def validate(
         self,
+        model : nn.Module,
         model_id: str,
         solver_output: SolverOutput,
         stage: str = "screening",       # screening | full

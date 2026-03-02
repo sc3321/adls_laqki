@@ -1,6 +1,7 @@
 import torch
 from transformers import PreTrainedModel
 import torch.nn as nn 
+from typing import List
 
 def load_model(
     model_id: str,
@@ -74,3 +75,8 @@ def get_quantizable_layers(model: nn.Module) -> list[str]:
             continue
         quantizable.append(name)
     return quantizable
+
+def get_layer_names(
+    model : nn.Module 
+) -> List[str] : 
+    return [name for name, _ in model.named_modules() if name]

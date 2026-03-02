@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict
-from typing import List
+from typing import List, Dict
 import numpy as np 
 
 class CalibrationConfig(BaseModel):
@@ -18,17 +18,15 @@ class ImportanceMatrix(BaseModel):
     """
     Per-weight-group importance scores computed via sum of squared activations
     
-    Follows llama.cpp imatrix methodology: for each weight group g in each layer, 
-    I_g = Sum_x ||a_g(x)||^2
-    Weight groups with high I_g carry more information and should be quantized more carefully
+    Follows llama.cpp imatrix methodology: for each weight group g in each layer
+        - I_g = Sum_x ||a_g(x)||^2
+        - Weight groups with high I_g carry more information and should be quantized more carefully
     
-    Used by ConfigurationExporter when applying AWQ/GPTQ - passes importance scores 
-    to quantization algorithm so salient weight groups receive proportionally more 
-    precision budget within their assigned bit-width
+    Used by ConfigurationExporter when applying AWQ/GPTQ 
+        - passes importance scores to quantization algorithm so salient weight groups receive proportionally more  precision budget within their assigned bit-width
     
     NOT used by solver - solver operates at layer granularity
-    Importance matrix operates at sub-layer (weight-group) granularity and affects 
-    how quantization is applied within a layer, not which precision the layer receives
+    Importance matrix operates at sub-layer (weight-group) granularity and affects how quantization is applied within a layer, not which precision the layer receives
     """
     model_config = ConfigDict(frozen=True)
     
@@ -38,12 +36,12 @@ class ImportanceMatrix(BaseModel):
     
     # {layer_name: np.ndarray of shape (num_weight_groups,)}
     # Stored as lists for Pydantic serialization; convert to numpy on use.
-    scores: dict[str, list[float]]
+    scores: Dict[str, List[float]]
     
     # Metadata per layer for interpreting the scores
     group_size: int = 128                   # Weight group size (matches AWQ/GPTQ default)
     
-    def to_numpy(self) -> dict[str, np.ndarray]:
+    def to_numpy(self) -> Dict[str, np.ndarray]:
         """Convert to numpy arrays for quantization backends"""
         return {name: np.array(vals) for name, vals in self.scores.items()}
     

@@ -1,10 +1,9 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, Dict, List
 
-class GPUSpec(BaseModel) :
-    """
-        HW Spec for a given GPU Architecture
-    """
+class GPUSpec(BaseModel):
+    """HW Spec for a given GPU Architecture."""
+    model_config = ConfigDict(frozen=True)
     name: str
     compute_capability: tuple[int, int]      # (9, 0) for H100
     memory_gb: float
@@ -30,6 +29,55 @@ class GPUSpec(BaseModel) :
     #   "W8A8_INT8": ["cutlass", "cublas"]
     # }
 
+
+def detect_gpu() -> GPUSpec:
+    """
+    First tries to match against the built-in GPU_REGISTRY by name.
+        -> If no match, constructs a minimal GPUSpec from pynvml queries.
+        -> This allows QPE to run on GPUs not in the registry with basic functionality, while registered GPUs get accurate kernel availability data
+    """
+    import pynvml
+    pynvml.nvmlInit()
+    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+    
+    name = pynvml.nvmlDeviceGetName(handle)
+    if isinstance(name, bytes):
+        name = name.decode("utf-8")
+    
+    memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+    memory_gb = memory_info.total / (1024 ** 3)
+    
+    # Try to match against registry
+    for registry_key, spec in GPU_REGISTRY.items():
+        if registry_key.lower().replace("_", " ") in name.lower().replace("-", " "):
+            pynvml.nvmlShutdown()
+            return spec
+    
+    # No match -> construct minimal spec from pynvml
+    cc_major = pynvml.nvmlDeviceGetCudaComputeCapability(handle)[0]
+    cc_minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)[1]
+    
+    pynvml.nvmlShutdown()
+
+    
+    return GPUSpec(
+        name=name,
+        compute_capability=(cc_major, cc_minor),
+        memory_gb=memory_gb,
+        memory_bandwidth_tb_s=1.0,  # conservative default
+        supports_fp8=(cc_major, cc_minor) >= (8, 9),
+        supports_fp4=(cc_major, cc_minor) >= (10, 0),
+        supports_int8_tensor_core=(cc_major, cc_minor) >= (8, 0),
+        peak_fp16_tflops=100.0,     # conservative default
+        peak_fp8_tflops=200.0 if (cc_major, cc_minor) >= (8, 9) else None,
+        peak_int8_tops=200.0,       # conservative default
+        available_kernels={
+            "FP16": ["cublas"],
+            "W4A16": ["torchao_int4"],
+            "W8A8_INT8": ["cutlass"] if (cc_major, cc_minor) >= (8, 0) else [],
+            "W8A8_FP8": ["cublas_fp8"] if (cc_major, cc_minor) >= (8, 9) else [],
+        },
+    )
 
 GPU_REGISTRY: dict[str, GPUSpec] = {
     "A100_80GB": GPUSpec(
@@ -65,6 +113,18 @@ GPU_REGISTRY: dict[str, GPUSpec] = {
             "W8A8_FP8": ["cublas_fp8"],
             "W8A8_INT8": ["cutlass", "cublas"],
             "FP16": ["cublas"],
+        },
+    ),
+    "H200_SXM": GPUSpec(
+        name="NVIDIA H200 141GB SXM", compute_capability=(9, 0),
+        memory_gb=141.0, memory_bandwidth_tb_s=4.8,
+        supports_fp8=True, supports_fp4=False, supports_int8_tensor_core=True,
+        peak_fp16_tflops=989.0, peak_fp8_tflops=1979.0, peak_int8_tops=1979.0,
+        available_kernels={
+            "W4A16": ["marlin", "exllamav2", "cutlass"],
+            "W8A8_FP8": ["deepgemm", "cublas_fp8", "cutlass"],
+            "W8A8_INT8": ["cutlass", "cublas"],
+            "FP16": ["cublas", "cutlass"],
         },
     ),
     "T4": GPUSpec(

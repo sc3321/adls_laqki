@@ -8,11 +8,12 @@ Currently implemented two kinds of optimization formulations :
     (B) Given a constraint on quality degradation (delta(b)), objective is to optimize hardware performance metrics 
 """
 from .types import Precision
-from pydantic import BaseModel
-from typing import Optional 
+from pydantic import BaseModel, ConfigDict
+from typing import Optional
 
 class SolverConfig(BaseModel):
     """Base configuration for all solvers."""
+    model_config = ConfigDict(frozen=True)
     solver_name: str # Registry key (e.g., quality_minimizer)
     precision_candidates: list[Precision] = [
         Precision.FP16, Precision.W8A8_FP8, Precision.W8A8_INT8, Precision.W4A16

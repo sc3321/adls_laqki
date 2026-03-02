@@ -1,6 +1,6 @@
 from typing import Protocol
-import torch.nn as nn 
-from solver.models import LayerDescriptor
+import torch.nn as nn
+from ..solver.models import LayerDescriptor
 from torch.utils.data.dataloader import DataLoader
 
 class SensitivityScorer(Protocol):

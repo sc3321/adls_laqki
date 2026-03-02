@@ -27,13 +27,31 @@ __all__ = [
 
 
 
+import logging as _log
+
 try:
     from .optimizers.quality import ILPQualityMinimizer
-    from .optimizers.resources import ILPResourceMinimizer
-    from .optimizers.pareto_explorer import ParetoExplorer
-
     SolverFactory.register("quality_minimizer", ILPQualityMinimizer)
+except ImportError as e:
+    if "pulp" in str(e).lower():
+        _log.getLogger(__name__).warning("PuLP not installed; ILPQualityMinimizer unavailable")
+    else:
+        raise
+
+try:
+    from .optimizers.resources import ILPResourceMinimizer
     SolverFactory.register("resource_minimizer", ILPResourceMinimizer)
+except ImportError as e:
+    if "pulp" in str(e).lower():
+        _log.getLogger(__name__).warning("PuLP not installed; ILPResourceMinimizer unavailable")
+    else:
+        raise
+
+try:
+    from .optimizers.pareto_explorer import ParetoExplorer
     SolverFactory.register("pareto_explorer", ParetoExplorer)
-except ImportError:
-    pass  # pulp not installed; solvers unavailable but package is importable
+except ImportError as e:
+    if "ax" in str(e).lower():
+        _log.getLogger(__name__).warning("Ax Platform not installed; ParetoExplorer unavailable")
+    else:
+        raise

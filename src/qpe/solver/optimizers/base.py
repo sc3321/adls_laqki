@@ -1,37 +1,61 @@
 import pulp
 import numpy as np
-from ..config import QualityMinimizerConfig
+from ..config import SolverConfig
 from ..models import SolverInput, SolverOutput, LayerDescriptor, LayerAssignment
 from ..types import Precision
 
+
 class ILPSolverMixin:
     """
-    Shared helper methods for ILP-family solvers
-    
-    Both QualityMinimizer and ResourceMinimizer use identical logic for candidate set 
-    construction, layer lookup, sensitivity aggregation, and output assembly
+    Shared helper methods for ILP-family solvers.
+
+    Both QualityMinimizer and ResourceMinimizer use identical logic for
+    candidate set construction, layer lookup, sensitivity aggregation,
+    and output assembly.
     """
+
+    config: SolverConfig
+
+    def _aggregate_sensitivities(self, layers: list[LayerDescriptor]) -> np.ndarray:
+        """
+        Combine raw sensitivity signals into a single composite score per layer.
+
+        Uses weighted geometric mean after min-max normalization.
+        Geometric mean is scale-invariant -- used because signals span
+        different scales (Hessian trace ~1e-3 to 1e+3, kurtosis ~1 to 1800+).
+        """
+        signals = np.zeros((len(layers), len(self.config.sensitivity_weights)))
+        weights = np.array(list(self.config.sensitivity_weights.values()))
+
+        for j, (signal_name, _) in enumerate(self.config.sensitivity_weights.items()):
+            raw = np.array([getattr(layer, signal_name) for layer in layers])
+            mn, mx = raw.min(), raw.max()
+            if mx > mn:
+                signals[:, j] = (raw - mn) / (mx - mn) * 0.99 + 0.01
+            else:
+                signals[:, j] = 0.5
+
+        log_signals = np.log(signals)
+        composite = np.exp(log_signals @ weights / weights.sum())
+        return composite
 
     def _build_candidate_set(
         self, input: SolverInput
     ) -> list[list[str]]:
         """
-        For each layer, determine which precisions are candidates
-        
+        For each layer, determine which precisions are candidates.
+
         A precision is a candidate for layer i if:
         1. It is in SolverInput available_precisions list
-        2. Layer i has profiling data for that precision (key exists in layer.memory_bytes and layer.latency_us)
+        2. Layer i has profiling data for that precision
         3. The layer is not pinned to a different precision
-        
-        Returns list of lists where candidates[i] is the list of precision strings available for layer i
         """
         candidates = []
         pinned = self.config.pinned_layers
         available = {p.value for p in input.available_precisions}
-        
+
         for layer in input.layers:
             if layer.layer_name in pinned:
-                # Pinned: only the pinned precision is a candidate
                 candidates.append([pinned[layer.layer_name]])
             else:
                 layer_candidates = [
@@ -44,18 +68,18 @@ class ILPSolverMixin:
                         f"Available: {available}, profiled: {set(layer.memory_bytes.keys())}"
                     )
                 candidates.append(layer_candidates)
-        
+
         return candidates
-    
+
     def _layer_index(
         self, layers: list[LayerDescriptor], layer_name: str
     ) -> int | None:
-        """Find the index of a layer by name - returns None if not found"""
+        """Find the index of a layer by name. Returns None if not found."""
         for i, layer in enumerate(layers):
             if layer.layer_name == layer_name:
                 return i
         return None
-    
+
     def _build_output(
         self,
         problem: pulp.LpProblem,
@@ -64,14 +88,7 @@ class ILPSolverMixin:
         sensitivities: np.ndarray,
         candidates: list[list[str]],
     ) -> SolverOutput:
-        """
-        Extract solution from solved PuLP problem into SolverOutput
-        
-        Reads binary variable values, computes per-layer and aggregate metrics, 
-        and assembles immutable SolverOutput
-        """
-        import pulp
-        
+        """Extract solution from solved PuLP problem into SolverOutput."""
         status_map = {
             pulp.constants.LpStatusOptimal: "optimal",
             pulp.constants.LpStatusNotSolved: "timeout",
@@ -80,7 +97,7 @@ class ILPSolverMixin:
             pulp.constants.LpStatusUndefined: "undefined",
         }
         solver_status = status_map.get(problem.status, "unknown")
-        
+
         if solver_status in ("infeasible", "unbounded", "undefined", "timeout"):
             return SolverOutput(
                 assignments=[],
@@ -96,7 +113,7 @@ class ILPSolverMixin:
                 kv_cache_dtype="fp16",
                 sensitivity_ranking=[],
             )
-        
+
         assignments = []
         for i, layer in enumerate(input.layers):
             for b in candidates[i]:
@@ -110,28 +127,28 @@ class ILPSolverMixin:
                         estimated_latency_us=layer.latency_us[b],
                     ))
                     break
-        
+
         total_quality = sum(a.estimated_quality_cost for a in assignments)
         total_memory = sum(a.estimated_memory_bytes for a in assignments)
         total_latency = sum(a.estimated_latency_us for a in assignments)
-        
+
         bitwidth_map = {"FP16": 16, "W8A8_FP8": 8, "W8A8_INT8": 8, "W4A16": 4}
         total_params = sum(l.param_count for l in input.layers)
         avg_bw = sum(
-            bitwidth_map.get(a.assigned_precision.value, 16) 
+            bitwidth_map.get(a.assigned_precision.value, 16)
             * input.layers[i].param_count
             for i, a in enumerate(assignments)
         ) / max(total_params, 1)
-        
+
         kv_dtype = "fp16"
         kv_bytes = input.kv_cache_bytes_per_token.get(kv_dtype, 0)
         total_kv = kv_bytes * input.max_sequence_length * input.max_batch_size * input.num_transformer_blocks
-        
+
         ranked = sorted(
             zip(sensitivities, [l.layer_name for l in input.layers]),
             reverse=True,
         )
-        
+
         return SolverOutput(
             assignments=assignments,
             total_estimated_quality_cost=total_quality,
@@ -146,7 +163,7 @@ class ILPSolverMixin:
             kv_cache_dtype=kv_dtype,
             sensitivity_ranking=[name for _, name in ranked],
         )
-    
+
     def _formulation_name(self) -> str:
-        """Return the formulation identifier for SolverOutput"""
+        """Return the formulation identifier for SolverOutput."""
         raise NotImplementedError

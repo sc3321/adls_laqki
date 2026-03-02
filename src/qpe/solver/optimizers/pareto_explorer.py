@@ -12,12 +12,14 @@ Reference: Ax benchmarks show it is the best platform for mixed/discrete, multi-
 """
 import numpy as np
 from ax.service.ax_client import AxClient, ObjectiveProperties
+from .base import ILPSolverMixin
+from ..protocol import QuantizationSolver
 from ..config import ParetoExplorerConfig
 from ..models import SolverInput, SolverOutput, LayerAssignment
 from ..types import Precision
 
-class ParetoExplorer:
-    """Explore Pareto frontier via multi-objective BO"""
+class ParetoExplorer(QuantizationSolver, ILPSolverMixin):
+    """Explore Pareto frontier via multi-objective BO."""
     
     def __init__(self, config: ParetoExplorerConfig):
         self.config = config
@@ -160,17 +162,3 @@ class ParetoExplorer:
             sensitivity_ranking=[],
         )
     
-    def _aggregate_sensitivities(self, layers) -> np.ndarray:
-        """Aggregate per-layer sensitivity scores using configured weights"""
-        sensitivities = []
-        for layer in layers:
-            score = (
-                self.config.sensitivity_weights.get("hessian_trace", 0.0) * layer.hessian_trace +
-                self.config.sensitivity_weights.get("gradient_norm", 0.0) * layer.gradient_norm +
-                self.config.sensitivity_weights.get("activation_kurtosis", 0.0) * layer.activation_kurtosis +
-                self.config.sensitivity_weights.get("channel_outlier_rate", 0.0) * layer.chanel_outlier_rate +
-                self.config.sensitivity_weights.get("fisher_diagonal_mean", 0.0) * layer.fisher_diagonal_mean +
-                self.config.sensitivity_weights.get("dynamic_range_ratio", 0.0) * layer.dynamic_range_ratio
-            )
-            sensitivities.append(score)
-        return np.array(sensitivities)

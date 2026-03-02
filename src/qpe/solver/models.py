@@ -24,7 +24,7 @@ class LayerDescriptor(BaseModel) :
     gradient_norm : float  # first order sensitiviy
     fisher_diagonal_mean : float
     activation_kurtosis : float
-    chanel_outlier_rate : float
+    channel_outlier_rate : float
     dynamic_range_ratio : float 
     activation_max_magnitude : float 
     weight_range : float

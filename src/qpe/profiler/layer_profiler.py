@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import copy
-import json
 import logging
 import subprocess
 import time
-from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
 
 from qpe.profiler.gpu_specs import GPUSpec
 from qpe.solver.types import Precision
-
+from .cache import ProfileCache
 log = logging.getLogger(__name__)
 
 # Bytes per weight parameter for each precision.
@@ -30,39 +28,76 @@ _MEMORY_BOUND_THRESHOLD = 100.0
 
 # ── Pure helper functions (importable for unit tests) ─────────────────────────
 
-def _count_params(layer: nn.Module) -> int:
-    return sum(p.numel() for p in layer.parameters())
+# def _count_params(layer: nn.Module) -> int:
+#     return sum(p.numel() for p in layer.parameters())
 
 
-def _weight_bytes(layer: nn.Module, precision: str) -> int:
-    return int(_count_params(layer) * _BYTES_PER_PARAM[precision])
+# def _weight_bytes(layer: nn.Module, precision: str) -> int:
+#     return int(_count_params(layer) * _BYTES_PER_PARAM[precision])
+
+def _get_weight_memory_bytes(module : nn.Module) -> int : 
+    """
+    Get total size in bytes of weights 
+    """
+    return (
+        sum(param.numel() * param.element_size() for param in module.parameters()) +
+        sum(buf.numel() * buf.element_size() for buf in module.buffers())
+    )
 
 
 def _is_memory_bound(
-    layer: nn.Module, precision: str, batch_size: int, seq_len: int
+    module : nn.Module, 
+    input_tensor : torch.Tensor,
+    precision: Precision, 
+    gpu_spec : GPUSpec,
+    batch_size: int, 
+    sequence_length: int
 ) -> bool:
     """
     Roofline heuristic: arithmetic intensity (FLOP/byte) < threshold → memory bound.
     Non-Linear layers always return False (no meaningful roofline for activations etc.).
     """
-    if not isinstance(layer, nn.Linear):
-        return False
-    flops = 2.0 * batch_size * seq_len * layer.in_features * layer.out_features
-    weight_b = _weight_bytes(layer, precision)
-    act_b    = batch_size * seq_len * layer.in_features  * 2  # fp16 activations in
-    out_b    = batch_size * seq_len * layer.out_features * 2  # fp16 activations out
-    intensity = flops / max(weight_b + act_b + out_b, 1)
-    return intensity < _MEMORY_BOUND_THRESHOLD
+
+    if isinstance(module, nn.Linear):
+        input_size = batch_size * sequence_length
+        n_feat_out = module.out_features
+        n_feat_in = module.in_features
+    else:
+        # estimate from parameter count
+        input_size = batch_size * sequence_length
+        params = sum(p.numel() for p in module.parameters())
+        n_feat_in = n_feat_out = int(params ** 0.5)
+
+    flops = 2 * input_size * n_feat_in * n_feat_out
+    
+    weight_bytes = _get_weight_memory_bytes(module)
+    input_bytes = input_tensor.numel() * input_tensor.element_size()
+    output_bytes = input_size * n_feat_out * 2
+
+    total_bytes = input_bytes + weight_bytes + output_bytes
+    intensity = flops / max(total_bytes, 1)
+
+    return intensity < _get_ops_per_byte(precision, gpu_spec)
+
+def _get_ops_per_byte(
+    precision : Precision,
+    spec : GPUSpec,
+) -> float : 
+    # GPU ops:byte ratio at the precision's peak throughput
+    bw_bytes_per_sec = spec.memory_bandwidth_tb_s * 1e12
+    
+    if precision in (Precision.W8A8_FP8,) and spec.peak_fp8_tflops:
+        peak_flops = spec.peak_fp8_tflops * 1e12
+    elif precision in (Precision.W8A8_INT8,):
+        peak_flops = spec.peak_int8_tops * 1e12
+    else:
+        peak_flops = spec.peak_fp16_tflops * 1e12
+    
+    return peak_flops / bw_bytes_per_sec
 
 
 def _quantize_layer(layer: nn.Module, precision: Precision, gpu_spec: GPUSpec) -> nn.Module:
-    """
-    Return a quantized copy of *layer* suitable for latency benchmarking.
-    FP16 → original layer (no copy needed).
-    Other precisions → deep copy quantized via torchao when available,
-    otherwise returns the FP16 layer as an approximation (latency is FP16-equivalent
-    but memory numbers from _weight_bytes remain correct).
-    """
+
     if precision == Precision.FP16:
         return layer
 
@@ -97,6 +132,65 @@ def _quantize_layer(layer: nn.Module, precision: Precision, gpu_spec: GPUSpec) -
             "quantize_ failed for %s (%s); using FP16 layer for latency.", precision.value, e
         )
         return layer
+
+
+def _resolve_layers(
+    model : nn.Module,
+    layer_names : List[str]
+) -> Dict[str, nn.Module] :
+    """
+        Extract named modules form model
+    """
+    modules = {}
+    for name in layer_names : 
+        try : 
+            modules[name] = model.get_submodule(name)
+        except AttributeError : 
+            raise KeyError(
+                f"Model has no layer {name} \n -> Available : {[n for n, _ in model.named_children()]}"
+            )
+    return modules
+
+def _get_layer_shape(module : nn.Module) -> Tuple[int, ...] : 
+    if isinstance(module, nn.Linear) :
+        return (module.out_features, module.in_features)    
+    # TODO : extend for other module types 
+    return tuple(next(module.parameters()).shape)
+
+def _get_layer_dtype(layer: nn.Module) -> str:
+    # Check parameters first, then buffers
+    tensors = list(layer.parameters()) + list(layer.buffers())
+    if not tensors:
+        return "unknown"
+    
+    return str(tensors[0].dtype)
+
+def _make_benchmark_input(
+    batch_size : int,
+    sequence_length : int,
+    module : nn.Module,
+    device : torch.device 
+) -> torch.Tensor :
+    """
+    For nn.Linear with weight shape (out_features, in_features)
+        -> Input shape is : (batch_size, sequence_length, in_features)
+    """
+
+    if isinstance(module, nn.Linear) :
+        in_features = module.in_features 
+    else : 
+        in_features = next(module.parameters()).shape[-1]
+    
+    dtype = next(module.parameters()).dtype 
+
+    # If weights are quantized (int8, int4, fp8), input should still be fp16
+    if dtype in (torch.int8, torch.float8, torch.float8_e4mfn, torch.float8_e5m2) :
+        dtype = torch.float16
+
+    return torch.randn(
+        batch_size, sequence_length, in_features, 
+        dtype=dtype, device=device
+    )
 
 
 def _time_layer(
@@ -160,7 +254,6 @@ def _measure_peak_memory(
     return torch.cuda.max_memory_allocated(device)
 
 
-# ── Main class ────────────────────────────────────────────────────────────────
 
 class LayerProfiler:
     """
@@ -170,11 +263,11 @@ class LayerProfiler:
     1. Lock GPU clocks to base frequency (prevents thermal throttling).
     2. Allocate each layer in isolation on GPU.
     3. Generate representative inputs of shape (batch_size, seq_len, in_features).
-    4. Warmup: num_warmup iterations — fills kernel caches, reaches thermal steady-state.
+    4. Warmup: num_warmup iterations - fills kernel caches, reaches thermal steady-state.
     5. Measure: num_measurements iterations with torch.cuda.Event timing (GPU-side only).
     6. Record median latency (robust to outlier CUDA preemption events).
-    7. Repeat for every supported precision × target_batch_size combination.
-    8. Cache results to disk — subsequent runs for the same model/GPU are instant.
+    7. Repeat for every supported precision x target_batch_size combination.
+    8. Cache results to disk - subsequent runs for the same model/GPU are instant.
     """
 
     def __init__(
@@ -185,53 +278,24 @@ class LayerProfiler:
         num_measurements: int = 200,
         seq_len: int = 1,
         cache_dir: str = ".qpe_cache/profiles",
+        qpe_version: str = "2.0",
     ):
         self.gpu_spec        = gpu_spec
         self.batch_sizes     = batch_sizes or [1, 4, 16, 64]
         self.num_warmup      = num_warmup
         self.num_measurements = num_measurements
         self.seq_len         = seq_len
-        self.cache_dir       = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.qpe_version = qpe_version
         self._device             = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._available_precisions = self._filter_precisions()
+        self.profile_cache = ProfileCache(
+            root_dir=cache_dir,
+            qpe_version=self.qpe_version,
+            gpu_name=self.gpu_spec.name,
+            supported_precisions=[p.value for p in self._available_precisions],
+        )
 
-    # ── Precision filtering ────────────────────────────────────────────────
 
-    def _filter_precisions(self) -> List[Precision]:
-        """Return precisions supported by the target GPU spec."""
-        supported = [Precision.FP16]
-        if self.gpu_spec.supports_int8_tensor_core:
-            supported += [Precision.W8A8_INT8, Precision.W4A16]
-        if self.gpu_spec.supports_fp8:
-            supported.append(Precision.W8A8_FP8)
-        return supported
-
-    # ── Cache ──────────────────────────────────────────────────────────────
-
-    def _cache_path(self, model_id: str) -> Path:
-        safe = model_id.replace("/", "_").replace(" ", "_")
-        gpu  = self.gpu_spec.name.replace(" ", "_")
-        return self.cache_dir / f"{safe}__{gpu}.json"
-
-    def _load_cache(self, model_id: str) -> dict | None:
-        path = self._cache_path(model_id)
-        if not path.exists():
-            return None
-        try:
-            data = json.loads(path.read_text())
-            log.info("Profiler cache hit: %s", path)
-            return data
-        except (json.JSONDecodeError, KeyError):
-            log.warning("Corrupt profiler cache at %s; re-profiling.", path)
-            return None
-
-    def _save_cache(self, model_id: str, results: dict) -> None:
-        path = self._cache_path(model_id)
-        path.write_text(json.dumps(results))
-        log.info("Profiler cache saved: %s", path)
-
-    # ── Public API ─────────────────────────────────────────────────────────
 
     def profile_all_layers(
         self,
@@ -244,20 +308,34 @@ class LayerProfiler:
         Profile all named layers across every supported precision.
 
         Returns:
-            { layer_name: {
-                "memory_bytes":      {precision: int},
-                "latency_us":        {precision: float},
-                "peak_memory_bytes": {precision: int},
-                "kernel_name":       {precision: str},
-                "is_memory_bound":   {precision: bool},
-            }}
+            { 
+                layer_name: 
+                {
+                    <precision> : 
+                    {
+                        "memory_bytes":       int,
+                        "latency_us":         float,
+                        "peak_memory_bytes":  int,
+                        "kernel_name":        str,
+                        "is_memory_bound":    bool,
+                    },
+                    ...
+                }
+            }
 
         Only nn.Linear layers are profiled; others are skipped.
         Results are cached to disk and reloaded on subsequent calls.
         """
-        cached = self._load_cache(model_id)
-        if cached is not None:
-            return cached
+
+        if self.profile_cache.is_model_complete(model_id):
+            cached = self._load_cached_profiles(
+                model=model,
+                layer_names=layer_names,
+                target_batch_size=target_batch_size,
+                model_id=model_id,
+            )
+            if cached is not None:
+                return cached
 
         self._lock_gpu_clocks()
         results: Dict[str, Dict] = {}
@@ -266,43 +344,88 @@ class LayerProfiler:
         try:
             for idx, name in enumerate(layer_names):
                 if name not in named:
-                    log.warning("Layer '%s' not in model — skipped.", name)
+                    log.warning("Layer '%s' not in model - skipped.", name)
                     continue
                 layer = named[name]
                 if not isinstance(layer, nn.Linear):
                     log.debug("Skipping non-Linear layer '%s' (%s).", name, type(layer).__name__)
                     continue
                 log.info("[%d/%d] Profiling %s ...", idx + 1, len(layer_names), name)
-                results[name] = self._profile_single_layer(layer, target_batch_size)
+
+                results[name] = self._profile_single_layer(
+                    model_id,
+                    name,
+                    layer, 
+                    target_batch_size
+                )
         finally:
             self._unlock_gpu_clocks()
 
-        self._save_cache(model_id, results)
         return results
 
-    # ── Internal profiling ─────────────────────────────────────────────────
 
-    def _profile_single_layer(self, layer: nn.Linear, batch_size: int) -> dict:
-        result: dict = {
-            "memory_bytes":      {},
-            "latency_us":        {},
-            "peak_memory_bytes": {},
-            "kernel_name":       {},
-            "is_memory_bound":   {},
+    def _profile_single_layer(
+        self, 
+        model_id: str,
+        layer_name : str,
+        layer: nn.Module, 
+        batch_size: int
+    ) -> Dict:
+
+        # Hold precision to layer profile at that quantization
+        result: Dict[str, Dict] = {}
+
+        inputs = _make_benchmark_input(
+            batch_size, 
+            self.seq_len, 
+            layer, 
+            self._device
+        )
+
+        layer_meta = {
+            "shape": list(_get_layer_shape(layer)),
+            "dtype": _get_layer_dtype(layer),
+            "param_count": int(sum(p.numel() for p in layer.parameters())),
         }
-        inputs = torch.randn(batch_size, self.seq_len, layer.in_features, dtype=torch.float16)
 
         for prec in self._available_precisions:
             pv = prec.value
-            q_layer = _quantize_layer(layer.half(), prec, self.gpu_spec)
+            if layer_profile := self.profile_cache.get(model_id, layer_name, batch_size, pv):
+                result[pv] = layer_profile 
+                continue
 
-            result["memory_bytes"][pv]      = _weight_bytes(layer, pv)
-            result["latency_us"][pv]        = _time_layer(
-                q_layer, inputs, self.num_warmup, self.num_measurements, self._device
+
+            q_layer = _quantize_layer(layer.half(), prec, self.gpu_spec)
+                
+            layer_profile = {
+                "latency_us" : _time_layer(
+                    layer            = q_layer, 
+                    inputs           = inputs, 
+                    num_warmup       = self.num_warmup, 
+                    num_measurements = self.num_measurements, 
+                    device           = self._device
+                ),
+                "memory_bytes"      : _get_weight_memory_bytes(layer),
+                "peak_memory_bytes" : _measure_peak_memory(q_layer, inputs, self._device),
+                "is_memory_bound"   : _is_memory_bound(
+                    module=layer,
+                    input_tensor=inputs,
+                    precision=prec,
+                    gpu_spec=self.gpu_spec,
+                    batch_size=batch_size,
+                    sequence_length=self.seq_len,
+                ), 
+                "kernel_name"       : self._kernel_name(prec)
+            }
+            result[pv] = layer_profile
+            self.profile_cache.put(
+                model_id=model_id,
+                layer_name=layer_name,
+                batch_size=batch_size,
+                precision=pv,
+                data=layer_profile,
+                layer_meta=layer_meta,
             )
-            result["peak_memory_bytes"][pv] = _measure_peak_memory(q_layer, inputs, self._device)
-            result["kernel_name"][pv]       = self._kernel_name(prec)
-            result["is_memory_bound"][pv]   = _is_memory_bound(layer, pv, batch_size, self.seq_len)
 
             del q_layer
             if self._device.type == "cuda":
@@ -314,7 +437,45 @@ class LayerProfiler:
         kernels = self.gpu_spec.available_kernels.get(precision.value, [])
         return kernels[0] if kernels else "generic"
 
-    # ── GPU clock management ───────────────────────────────────────────────
+    def _load_cached_profiles(
+        self,
+        model: nn.Module,
+        layer_names: List[str],
+        target_batch_size: int,
+        model_id: str,
+    ) -> Dict[str, Dict] | None:
+        """Load cached profiles for all requested layers and precisions."""
+        named = dict(model.named_modules())
+        cached: Dict[str, Dict] = {}
+        for name in layer_names:
+            if name not in named:
+                continue
+
+            layer = named[name]
+            if not isinstance(layer, nn.Linear):
+                continue
+
+            layer_profiles: Dict[str, Dict] = {}
+            for precision in self._available_precisions:
+                profile = self.profile_cache.get(
+                    model_id=model_id,
+                    layer_name=name,
+                    batch_size=target_batch_size,
+                    precision=precision.value,
+                )
+                if profile is None:
+                    return None
+                layer_profiles[precision.value] = profile
+            cached[name] = layer_profiles
+
+        log.info(
+            "Profiler cache hit: model=%s gpu=%s batch=%s",
+            model_id,
+            self.gpu_spec.name,
+            target_batch_size,
+        )
+        return cached
+
 
     def _lock_gpu_clocks(self) -> None:
         """Lock GPU clocks to base frequency for stable latency measurements."""
@@ -345,3 +506,13 @@ class LayerProfiler:
             log.debug("GPU clocks restored.")
         except (FileNotFoundError, subprocess.TimeoutExpired, PermissionError):
             pass
+
+
+    def _filter_precisions(self) -> List[Precision]:
+        """Return precisions supported by the target GPU spec."""
+        supported = [Precision.FP16]
+        if self.gpu_spec.supports_int8_tensor_core:
+            supported += [Precision.W8A8_INT8, Precision.W4A16]
+        if self.gpu_spec.supports_fp8:
+            supported.append(Precision.W8A8_FP8)
+        return supported

@@ -38,10 +38,11 @@ import pulp
 import numpy as np
 
 from qpe.solver.optimizers.base import ILPSolverMixin
+from ..protocol import QuantizationSolver
 from ..models import SolverInput, SolverOutput, LayerDescriptor
 from ..config import ResourceMinimizerConfig
 
-class ILPResourceMinimizer(ILPSolverMixin):
+class ILPResourceMinimizer(QuantizationSolver, ILPSolverMixin):
     """Minimize resource usage subject to quality budget."""
     
     def __init__(self, config: ResourceMinimizerConfig):
@@ -114,6 +115,3 @@ class ILPResourceMinimizer(ILPSolverMixin):
         
         return self._build_output(prob, c, input, sensitivities, candidates)
     
-    # _aggregate_sensitivities is identical to QualityMinimizer - reused via mixin.
-    # - The same sensitivity computation feeds both formulations.
-    # - The solver decides how to use it (objective vs. constraint), not the scorer.
