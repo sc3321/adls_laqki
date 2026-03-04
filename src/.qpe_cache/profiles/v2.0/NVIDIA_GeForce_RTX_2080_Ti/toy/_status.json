@@ -1,0 +1,36 @@
+{
+  "expected_precisions": [
+    "FP16",
+    "W8A8_INT8",
+    "W4A16"
+  ],
+  "layers": {
+    "0": {
+      "batch_sizes": {
+        "1": {
+          "complete": true,
+          "profiled": [
+            "FP16",
+            "W8A8_INT8",
+            "W4A16"
+          ]
+        }
+      },
+      "complete": true
+    },
+    "2": {
+      "batch_sizes": {
+        "1": {
+          "complete": true,
+          "profiled": [
+            "FP16",
+            "W8A8_INT8",
+            "W4A16"
+          ]
+        }
+      },
+      "complete": true
+    }
+  },
+  "model_complete": true
+}

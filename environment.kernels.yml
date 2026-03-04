@@ -9,9 +9,9 @@ dependencies:
   - python=3.11
   - pip
 
-  # PyTorch CUDA runtime
+  # PyTorch + CUDA runtime (must match toolkit if you install it)
   - pytorch
-  - pytorch-cuda=12.1
+  - pytorch-cuda=12.4
 
   # Build toolchain
   - cmake
@@ -21,9 +21,6 @@ dependencies:
   - ccache
   - gcc_linux-64
   - gxx_linux-64
-
-  # CUDA compiler toolchain (nvcc)
-  - cuda-toolkit=12.4
 
   # Dev/testing
   - numpy
@@ -40,4 +37,3 @@ dependencies:
       - datasets
       - packaging
       - pybind11
-

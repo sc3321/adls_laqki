@@ -1,0 +1,15 @@
+{
+  "_layer_meta": {
+    "dtype": "torch.float32",
+    "param_count": 16777216,
+    "shape": [
+      4096,
+      4096
+    ]
+  },
+  "is_memory_bound": true,
+  "kernel_name": "generic",
+  "latency_us": 125.98399817943573,
+  "memory_bytes": 33554432,
+  "peak_memory_bytes": 42090496
+}

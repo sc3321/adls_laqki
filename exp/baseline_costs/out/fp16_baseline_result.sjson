@@ -1,0 +1,152 @@
+{
+  "meta": {
+    "timestamp_utc": "2026-03-02T10:36:35Z",
+    "platform": "Linux-6.14.0-29-generic-x86_64-with-glibc2.39",
+    "python": "3.11.14",
+    "torch_version": "2.6.0+cu124",
+    "cuda_version": "12.4",
+    "device": "cuda",
+    "gpu_name": "NVIDIA GeForce RTX 2080 Ti",
+    "gpu_compute_capability": "7.5",
+    "gpu_total_mem_gb": 10.57
+  },
+  "dtype": "fp16",
+  "warmup_iters": 20,
+  "timed_iters": 100,
+  "results": [
+    {
+      "shape": {
+        "name": "mlp_expand",
+        "M": 1,
+        "K": 768,
+        "N": 3072,
+        "bias": false
+      },
+      "latency_ms_p50": 0.028672000393271446,
+      "latency_ms_p90": 0.030592000111937523,
+      "latency_ms_p99": 0.03641600161790848
+    },
+    {
+      "shape": {
+        "name": "attn_proj",
+        "M": 1,
+        "K": 768,
+        "N": 768,
+        "bias": false
+      },
+      "latency_ms_p50": 0.028351999819278717,
+      "latency_ms_p90": 0.029055999591946602,
+      "latency_ms_p99": 0.038816001266241074
+    },
+    {
+      "shape": {
+        "name": "mlp_expand",
+        "M": 512,
+        "K": 768,
+        "N": 3072,
+        "bias": false
+      },
+      "latency_ms_p50": 0.10195200145244598,
+      "latency_ms_p90": 0.10278400033712387,
+      "latency_ms_p99": 0.11007999628782272
+    },
+    {
+      "shape": {
+        "name": "mlp_project",
+        "M": 512,
+        "K": 3072,
+        "N": 768,
+        "bias": false
+      },
+      "latency_ms_p50": 0.10796800255775452,
+      "latency_ms_p90": 0.10956799983978271,
+      "latency_ms_p99": 0.11846400052309036
+    },
+    {
+      "shape": {
+        "name": "mlp_expand",
+        "M": 1,
+        "K": 4096,
+        "N": 16384,
+        "bias": false
+      },
+      "latency_ms_p50": 0.2500320076942444,
+      "latency_ms_p90": 0.25334399938583374,
+      "latency_ms_p99": 0.2744320034980774
+    },
+    {
+      "shape": {
+        "name": "mlp_expand",
+        "M": 4,
+        "K": 4096,
+        "N": 16384,
+        "bias": false
+      },
+      "latency_ms_p50": 0.2682879865169525,
+      "latency_ms_p90": 0.2702080011367798,
+      "latency_ms_p99": 0.27423998713493347
+    },
+    {
+      "shape": {
+        "name": "attn_proj",
+        "M": 512,
+        "K": 4096,
+        "N": 4096,
+        "bias": false
+      },
+      "latency_ms_p50": 0.4256480038166046,
+      "latency_ms_p90": 0.4264959990978241,
+      "latency_ms_p99": 0.43196800351142883
+    },
+    {
+      "shape": {
+        "name": "mlp_expand",
+        "M": 2048,
+        "K": 4096,
+        "N": 16384,
+        "bias": false
+      },
+      "latency_ms_p50": 5.068384170532227,
+      "latency_ms_p90": 5.111839771270752,
+      "latency_ms_p99": 5.485856056213379
+    }
+  ],
+  "summary_top3_slowest": [
+    {
+      "shape": {
+        "name": "mlp_expand",
+        "M": 2048,
+        "K": 4096,
+        "N": 16384,
+        "bias": false
+      },
+      "latency_ms_p50": 5.068384170532227,
+      "latency_ms_p90": 5.111839771270752,
+      "latency_ms_p99": 5.485856056213379
+    },
+    {
+      "shape": {
+        "name": "attn_proj",
+        "M": 512,
+        "K": 4096,
+        "N": 4096,
+        "bias": false
+      },
+      "latency_ms_p50": 0.4256480038166046,
+      "latency_ms_p90": 0.4264959990978241,
+      "latency_ms_p99": 0.43196800351142883
+    },
+    {
+      "shape": {
+        "name": "mlp_expand",
+        "M": 4,
+        "K": 4096,
+        "N": 16384,
+        "bias": false
+      },
+      "latency_ms_p50": 0.2682879865169525,
+      "latency_ms_p90": 0.2702080011367798,
+      "latency_ms_p99": 0.27423998713493347
+    }
+  ]
+}

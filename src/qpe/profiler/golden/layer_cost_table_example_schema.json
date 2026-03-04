@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-03-04T17:52:37.825626+00:00",
+  "qpe_version": "2.0",
+  "torch_version": "2.6.0+cu124",
+  "torchao_version": null,
+  "gpu_name": "NVIDIA GeForce RTX 2080 Ti",
+  "model_id": "toy",
+  "metadata": {
+    "note": "p99_us equals p50_us until Day 2 timing upgrade"
+  },
+  "entries": [
+    {
+      "model_id": "toy",
+      "layer_name": "0",
+      "layer_type": "Linear",
+      "gpu_name": "NVIDIA GeForce RTX 2080 Ti",
+      "precision": "FP16",
+      "batch_size": 1,
+      "seq_len": 1,
+      "regime": "decode",
+      "p50_us": 125.98399817943573,
+      "p99_us": 125.98399817943573,
+      "weight_bytes": 33554432,
+      "peak_mem_bytes": 42090496,
+      "kernel_name": "generic",
+      "is_memory_bound": true,
+      "layer_shape": [
+        4096,
+        4096
+      ],
+      "param_count": 16777216,
+      "dtype": "torch.float32"
+    },
+    {
+      "model_id": "toy",
+      "layer_name": "0",
+      "layer_type": "Linear",
+      "gpu_name": "NVIDIA GeForce RTX 2080 Ti",
+      "precision": "W8A8_INT8",
+      "batch_size": 1,
+      "seq_len": 1,
+      "regime": "decode",
+      "p50_us": 123.29600006341934,
+      "p99_us": 123.29600006341934,
+      "weight_bytes": 33554432,
+      "peak_mem_bytes": 42090496,
+      "kernel_name": "generic",
+      "is_memory_bound": true,
+      "layer_shape": [
+        4096,
+        4096
+      ],
+      "param_count": 16777216,
+      "dtype": "torch.float32"
+    },
+    {
+      "model_id": "toy",
+      "layer_name": "0",
+      "layer_type": "Linear",
+      "gpu_name": "NVIDIA GeForce RTX 2080 Ti",
+      "precision": "W4A16",
+      "batch_size": 1,
+      "seq_len": 1,
+      "regime": "decode",
+      "p50_us": 124.35200065374374,
+      "p99_us": 124.35200065374374,
+      "weight_bytes": 33554432,
+      "peak_mem_bytes": 42090496,
+      "kernel_name": "generic",
+      "is_memory_bound": true,
+      "layer_shape": [
+        4096,
+        4096
+      ],
+      "param_count": 16777216,
+      "dtype": "torch.float32"
+    },
+    {
+      "model_id": "toy",
+      "layer_name": "2",
+      "layer_type": "Linear",
+      "gpu_name": "NVIDIA GeForce RTX 2080 Ti",
+      "precision": "FP16",
+      "batch_size": 1,
+      "seq_len": 1,
+      "regime": "decode",
+      "p50_us": 181.18399381637573,
+      "p99_us": 181.18399381637573,
+      "weight_bytes": 90177536,
+      "peak_mem_bytes": 132281856,
+      "kernel_name": "generic",
+      "is_memory_bound": true,
+      "layer_shape": [
+        11008,
+        4096
+      ],
+      "param_count": 45088768,
+      "dtype": "torch.float32"
+    },
+    {
+      "model_id": "toy",
+      "layer_name": "2",
+      "layer_type": "Linear",
+      "gpu_name": "NVIDIA GeForce RTX 2080 Ti",
+      "precision": "W8A8_INT8",
+      "batch_size": 1,
+      "seq_len": 1,
+      "regime": "decode",
+      "p50_us": 227.32800245285034,
+      "p99_us": 227.32800245285034,
+      "weight_bytes": 90177536,
+      "peak_mem_bytes": 132281856,
+      "kernel_name": "generic",
+      "is_memory_bound": true,
+      "layer_shape": [
+        11008,
+        4096
+      ],
+      "param_count": 45088768,
+      "dtype": "torch.float32"
+    },
+    {
+      "model_id": "toy",
+      "layer_name": "2",
+      "layer_type": "Linear",
+      "gpu_name": "NVIDIA GeForce RTX 2080 Ti",
+      "precision": "W4A16",
+      "batch_size": 1,
+      "seq_len": 1,
+      "regime": "decode",
+      "p50_us": 225.21600127220154,
+      "p99_us": 225.21600127220154,
+      "weight_bytes": 90177536,
+      "peak_mem_bytes": 132281856,
+      "kernel_name": "generic",
+      "is_memory_bound": true,
+      "layer_shape": [
+        11008,
+        4096
+      ],
+      "param_count": 45088768,
+      "dtype": "torch.float32"
+    }
+  ]
+}

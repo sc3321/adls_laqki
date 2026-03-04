@@ -1,0 +1,8 @@
+{
+  "dtype": "torch.float32",
+  "param_count": 45088768,
+  "shape": [
+    11008,
+    4096
+  ]
+}
