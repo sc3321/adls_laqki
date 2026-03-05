@@ -1,4 +1,6 @@
 from typing import List, Dict, Any
+import torch 
+import torch.nn as nn 
 
 def _find_free_port() -> int : 
     """Get available tcp port for vLLM server""" 
@@ -32,17 +34,6 @@ def _wait_for_vllm_server(port: int, timeout: int = 300) -> None:
         f"vLLM server did not become healthy within {timeout}s. "
     )
 
-
-def _get_gpu_mem_usage() -> float : 
-    import pynvml
-    try:
-        pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        pynvml.nvmlShutdown()
-        return info.used / (1024 ** 3)
-    except Exception:
-        return 0.0
 
 def _build_vllm_server_cmd(
     model_path : str, 
@@ -108,3 +99,38 @@ def _build_trtllm_run_cmd(
         "--max_output_len", str(config.output_length),
         "--output_format", output_format,
     ]
+
+def _make_benchmark_input(
+    batch_size: int,
+    sequence_length: int,
+    module: nn.Module,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Benchmark input for a layer.
+
+    We keep inputs floating-point. For CUDA profiling we use fp16 inputs
+    to match layer.half() profiling and avoid dtype mismatch.
+    """
+    if isinstance(module, nn.Linear):
+        in_features = module.in_features
+    else:
+        in_features = next(module.parameters()).shape[-1]
+
+    # Always use fp16 on CUDA for profiling (matches layer.half()).
+    if device.type == "cuda":
+        inp_dtype = torch.float16
+    else:
+        # CPU fallback: match module dtype if possible
+        try:
+            inp_dtype = next(module.parameters()).dtype
+        except StopIteration:
+            inp_dtype = torch.float32
+
+    return torch.randn(
+        batch_size,
+        sequence_length,
+        in_features,
+        dtype=inp_dtype,
+        device=device,
+    )
