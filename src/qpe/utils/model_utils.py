@@ -1,7 +1,8 @@
 import torch
 from transformers import PreTrainedModel
 import torch.nn as nn 
-from typing import List
+from typing import List, Dict, Tuple 
+import copy 
 
 def load_model(
     model_id: str,
@@ -80,3 +81,65 @@ def get_layer_names(
     model : nn.Module 
 ) -> List[str] : 
     return [name for name, _ in model.named_modules() if name]
+
+def _quantize_layer(layer: nn.Module, precision, gpu_spec) -> nn.Module:
+    from .types import Precision 
+
+    if precision == Precision.FP16:
+        return layer
+
+    if precision == Precision.W8A8_FP8 and not gpu_spec.supports_fp8:
+        return layer
+
+    try:
+        from torchao.quantization import (
+            float8_weight_only,
+            int4_weight_only,
+            int8_dynamic_activation_int8_weight,
+            quantize_,
+        )
+    except ImportError:
+        return layer
+
+    try:
+        q = copy.deepcopy(layer)
+        if precision == Precision.W8A8_FP8:
+            quantize_(q, float8_weight_only())
+        elif precision == Precision.W8A8_INT8:
+            quantize_(q, int8_dynamic_activation_int8_weight())
+        elif precision == Precision.W4A16:
+            quantize_(q, int4_weight_only(group_size=128))
+        return q
+    except Exception as e:
+        return layer
+
+
+def _resolve_layers(model: nn.Module, layer_names: List[str]) -> Dict[str, nn.Module]:
+    """
+    Extract named modules form model
+    """
+    modules = {}
+    for name in layer_names:
+        try:
+            modules[name] = model.get_submodule(name)
+        except AttributeError:
+            raise KeyError(
+                f"Model has no layer {name} \n -> Available : {[n for n, _ in model.named_children()]}"
+            )
+    return modules
+
+
+def _get_layer_shape(module: nn.Module) -> Tuple[int, ...]:
+    if isinstance(module, nn.Linear):
+        return (module.out_features, module.in_features)
+    # TODO : extend for other module types
+    return tuple(next(module.parameters()).shape)
+
+
+def _get_layer_dtype(layer: nn.Module) -> str:
+    # Check parameters first, then buffers
+    tensors = list(layer.parameters()) + list(layer.buffers())
+    if not tensors:
+        return "unknown"
+
+    return str(tensors[0].dtype)
