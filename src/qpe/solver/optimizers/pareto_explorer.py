@@ -16,7 +16,7 @@ from .base import ILPSolverMixin
 from ..protocol import QuantizationSolver
 from ..config import ParetoExplorerConfig
 from ..models import SolverInput, SolverOutput, LayerAssignment
-from ..types import Precision
+from ...utils.types import Precision
 
 class ParetoExplorer(QuantizationSolver, ILPSolverMixin):
     """Explore Pareto frontier via multi-objective BO."""

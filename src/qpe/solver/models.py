@@ -2,7 +2,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 from typing import List, Dict, Tuple
 
-from .types import Precision
+from ..utils.types import Precision
 
 class LayerDescriptor(BaseModel) :
     """

@@ -2,7 +2,7 @@ import pulp
 import numpy as np
 from ..config import SolverConfig
 from ..models import SolverInput, SolverOutput, LayerDescriptor, LayerAssignment
-from ..types import Precision
+from ...utils.types import Precision
 
 
 class ILPSolverMixin:

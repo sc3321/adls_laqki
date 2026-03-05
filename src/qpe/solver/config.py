@@ -7,7 +7,7 @@ Currently implemented two kinds of optimization formulations :
     (A) Given a set of hardware constraints, objective is minmizing model quality loss
     (B) Given a constraint on quality degradation (delta(b)), objective is to optimize hardware performance metrics 
 """
-from .types import Precision
+from ..utils.types import Precision
 from pydantic import BaseModel, ConfigDict
 from typing import Optional
 
