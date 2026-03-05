@@ -9,9 +9,11 @@ import torch.nn as nn
 
 from qpe.profiler.gpu_specs import GPUSpec
 from qpe.profiler.layer_profiler import LayerProfiler
-from qpe.profiler.exporter import build_cost_table, write_cost_table_json
+from qpe.profiler.exporter import build_profile_table, write_profile_json
 
 log = logging.getLogger("qpe.cli")
+
+# TODO : delete - it exists in gpu_specs.py - just adjust that one as you need
 def _detect_gpu_spec() -> GPUSpec:
     """
     Minimal GPUSpec construction for CLI.
@@ -38,6 +40,7 @@ def _detect_gpu_spec() -> GPUSpec:
     mem_gb = float(props.total_memory) / (1024**3)
 
     # Lookup table for known GPUs (extend as needed).
+    # TODO : move this into gpu_specs.py
     # Values are "good enough" for Day 1; Day 2+ we can make these precise.
     presets = {
         # Turing
@@ -109,17 +112,16 @@ def _default_layer_names(model: nn.Module) -> List[str]:
             names.append(name)
     return names
 
-
+# TODO : move this whole damn file into testing pls
 def main() -> None:
     parser = argparse.ArgumentParser(prog="qpe")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("profile", help="Profile model layers and write LayerCostTable JSON")
+    p = sub.add_parser("profile", help="Profile model layers and write profile JSON")
     p.add_argument("--model-id", default="toy", help="Model identifier for provenance")
-    p.add_argument("--out", required=True, help="Output path for LayerCostTable JSON")
+    p.add_argument("--out", required=True, help="Output path for profile JSON")
     p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--seq-len", type=int, default=1)
-    p.add_argument("--regime", choices=["decode", "prefill"], default="decode")
     p.add_argument("--layers", default="", help="Comma-separated layer names (default: all Linear layers)")
     p.add_argument("--num-warmup", type=int, default=50)
     p.add_argument("--num-measurements", type=int, default=200)
@@ -152,19 +154,18 @@ def main() -> None:
 
     layer_metas = profiles.pop("__layer_metas__", {})
 
-    table = build_cost_table(
+    table = build_profile_table(
         profiles=profiles,
         model_id=args.model_id,
         gpu_name=gpu_spec.name,
         qpe_version=profiler.qpe_version,
         batch_size=args.batch_size,
         seq_len=args.seq_len,
-        regime=args.regime,
         layer_metas=layer_metas,
     )
 
-    write_cost_table_json(args.out, table)
-    log.info("Wrote %d entries to %s", len(table.entries), args.out)
+    write_profile_json(args.out, table)
+    log.info("Wrote %d layer entries to %s", len(table.get("entries", {})), args.out)
 
 
 if __name__ == "__main__":
