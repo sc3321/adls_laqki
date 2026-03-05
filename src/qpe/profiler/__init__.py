@@ -1,10 +1,7 @@
 from .gpu_specs import GPUSpec
 from .layer_profiler import LayerProfiler
-from .serving_benchmark import (
-    ServingBenchmark, 
-    ServingBenchmarkConfig, 
-    ServingBenchmarkResult
-)
+from benchmark.serving_benchmark import ServingBenchmark
+from benchmark.models import ServingBenchmarkConfig, ServingBenchmarkResult
 
 __all__ = [
     "GPUSpec",

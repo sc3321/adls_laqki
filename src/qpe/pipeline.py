@@ -23,7 +23,7 @@ from .solver import (
 from .solver.config import ResourceMinimizerConfig, ParetoExplorerConfig
 from .solver.models import FeedbackSignal
 from .solver.protocol import QuantizationSolver
-from .solver.types import Precision
+from .utils.types import Precision
 from .utils.model_utils import load_model, get_quantizable_layers
 from .validation.config import ValidationConfig
 from .validation.engine import ValidationEngine
