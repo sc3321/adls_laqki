@@ -1,12 +1,18 @@
 import torch
 from torch.utils.data.dataloader import DataLoader
-from typing import Optional, Dict, List, Tuple 
+from typing import Optional, Dict, List, Tuple
 from qpe.scorer.models import ActivationSpec, StatsConfig
-from qpe.scorer.statistics import ActivationStatsCollector, HutchinsonTraceCalculator, compute_weight_stats
+from qpe.scorer.statistics import (
+    ActivationStatsCollector,
+    HutchinsonTraceCalculator,
+    compute_weight_stats,
+)
+from qpe.scorer.saliency import OutputSaliencyCalculator, SaliencyConfig
 from ..solver.models import LayerDescriptor
-from typing import List
+from typing import List, Literal
 import torch.nn as nn
 from dataclasses import dataclass
+
 
 def _tensor_to_scalar(
     t: Optional[torch.Tensor],
@@ -30,19 +36,59 @@ def _tensor_to_scalar(
     else:
         return t.mean().item()
 
+
 @dataclass
 class HessianTraceScorerConfig:
     """
     Configuration for the HessianTraceScorer.
     """
-    n_hutchinson_samples: int = 200         # T random vectors per layer
-    layers_per_group: Optional[int] = None  # layers per forward pass (None -> auto)
 
+    saliency_mode: Literal["guided", "fisher_diagonal"] = "guided"
+    """
+    Method to use for the primary sensitivity signal
+        guided          -> GuidedQuant output saliency (recommended)
+        fisher_diagonal -> per-weight diagonal Fisher
+    """
+
+    saliency_num_batches: int = 4
+    """Calibration batches for output saliency
+        - 4 matches the GuidedQuant paper.
+        - Signal is stable at this count cuz per-channel gradient energy has much lower variance than per-weight gradient estimates
+    """
+
+    saliency_num_groups: int = 4
+    """
+    Output channel groups for optional per-group Hessian caching
+        - 4 matches GuidedQuant paper
+        - Only affects saved per-group tensors;
+        - The ILP scalar is computed from full per-channel saliency regardless
+    """
+
+    saliency_gradient_scale: float = 1e3
+    """Scale factor for gradients before squaring (prevents underflow).
+    1e3 matches GuidedQuant paper. Divided out after accumulation."""
+
+    saliency_save_dir: Optional[str] = None
+    """If set, save per-group saliency tensors here for later Hessian
+    modification (GuidedQuant Algorithm 1 Line 4)."""
+
+    # Hutchinson trace config
+    compute_hessian_trace: bool = True
+    """
+    Whether to compute Hutchinson trace estimates
+        Useful as a secondary signal and for Phase 2 cross-layer IQP, but expensive.
+        Set False to skip for faster scoring
+    """
+
+    n_hutchinson_samples: int = 200
+    layers_per_group: Optional[int] = None
+    fix_batches: bool = False
+
+    # Legacy diagonal Fisher config (only used when saliency_mode == "fisher_diagonal")
     collect_fisher: bool = True
-    num_fisher_batches: int = 50            # batches to average over
+    num_fisher_batches: int = 50
 
-    fix_batches: bool = False               # same batch for all layer groups?
-
+    # Activation stats config
     eps: float = 1e-8
     outlier_sigma: float = 6.0
 
@@ -83,6 +129,18 @@ class HessianTraceScorer:
             fix_batches=config.fix_batches,
         )
 
+        self._saliency_calculator = OutputSaliencyCalculator(
+            config=SaliencyConfig(
+                num_batches=config.saliency_num_batches,
+                num_groups=config.saliency_num_groups,
+                gradient_scale=config.saliency_gradient_scale,
+                save_dir=config.saliency_save_dir,
+            )
+        )
+
+        # Per-group saliency tensors from last score() call.
+        # Available for downstream use (e.g building per-group Hessians).
+        self.last_grouped_saliency: Dict[str, torch.Tensor] = {}
 
     def score(
         self,
@@ -91,32 +149,53 @@ class HessianTraceScorer:
         layer_names: List[str],
     ) -> List[LayerDescriptor]:
         """
-        Run the full scoring pipeline and return one LayerDescriptor per layer
-        Resource fields (memory_bytes, latency_us, ...) left for the LayerProfiler
+        Run the full scoring pipeline and return one LayerDescriptor per layer.
+        Resource fields (memory_bytes, latency_us, ...) left for the LayerProfiler.
         """
         model.eval()
         device = next(model.parameters()).device
 
-        act_stats = self._collect_activation_stats(model, dataloader, layer_names, device)
-        weight_ranges, weight_kurtoses = compute_weight_stats(model, layer_names)
-        grad_norms = self._compute_gradient_norms(model, dataloader, layer_names, device)
+        # Primary sensitivity signal
+        if self.config.saliency_mode == "guided":
+            fisher_means, grouped = self._saliency_calculator.compute(
+                model, dataloader, layer_names
+            )
+            self.last_grouped_saliency = grouped
 
-        fisher_means: Dict[str, float] = {name: 0.0 for name in layer_names}
-        if self.collect_fisher:
+        elif self.config.saliency_mode == "diagonal_fisher":
             fisher_means = self._compute_fisher_diagonal(
                 model, dataloader, layer_names, device
             )
+            self.last_grouped_saliency = {}
+        else:
+            raise ValueError(
+                f"Unknown saliency_mode: {self.config.saliency_mode!r}. "
+                f"Expected 'guided' or 'diagonal_fisher'."
+            )
 
-
-        trace_results = self.trace_calculator.compute_trace(
-            model=model,
-            dataloader=dataloader,
-            layer_names=layer_names,
-            n_samples=self.num_hutchinson_samples,
-            dtype=self.dtype,
+        # Secondary signals (always computed)
+        act_stats = self._collect_activation_stats(
+            model, dataloader, layer_names, device
+        )
+        weight_ranges, weight_kurtoses = compute_weight_stats(model, layer_names)
+        grad_norms = self._compute_gradient_norms(
+            model, dataloader, layer_names, device
         )
 
+        trace_results: Dict[str, Tuple[float, bool]] = {
+            name: (0.0, True) for name in layer_names
+        }
+        if self.config.compute_hessian_trace:
 
+            trace_results = self.trace_calculator.compute_trace(
+                model=model,
+                dataloader=dataloader,
+                layer_names=layer_names,
+                n_samples=self.num_hutchinson_samples,
+                dtype=self.dtype,
+            )
+
+        # Assemble
         descriptors = self._assemble_descriptors(
             model=model,
             layer_names=layer_names,
@@ -148,7 +227,10 @@ class HessianTraceScorer:
         )
 
         collector = ActivationStatsCollector(
-            model, specs, config=stats_config, strict=False,
+            model,
+            specs,
+            config=stats_config,
+            strict=False,
         )
 
         with collector:
@@ -207,7 +289,8 @@ class HessianTraceScorer:
             # accum g^2
             for name, layer in layers.items():
                 grad_params = [
-                    p for p in layer.parameters()
+                    p
+                    for p in layer.parameters()
                     if p.requires_grad and p.grad is not None
                 ]
                 for accum, p in zip(fisher_accum[name], grad_params):
@@ -227,14 +310,15 @@ class HessianTraceScorer:
                 total_sum = sum(a.sum().item() for a in fisher_accum[name])
                 total_params = sum(a.numel() for a in fisher_accum[name])
                 if total_params > 0:
-                    fisher_means[name] = total_sum / (n_batches_processed * total_params)
+                    fisher_means[name] = total_sum / (
+                        n_batches_processed * total_params
+                    )
                 else:
                     fisher_means[name] = 0.0
             else:
                 fisher_means[name] = 0.0
 
         return fisher_means
-
 
     def _compute_gradient_norms(
         self,
@@ -268,7 +352,7 @@ class HessianTraceScorer:
                 if p.grad is not None:
                     layer_grad_norm_sq += p.grad.data.norm(2).item() ** 2
 
-            grad_norms[name] = layer_grad_norm_sq ** 0.5
+            grad_norms[name] = layer_grad_norm_sq**0.5
 
         # Cleanup
         model.zero_grad()
@@ -326,7 +410,6 @@ class HessianTraceScorer:
                     layer_index=i,
                     relative_depth=i / max(n_layers - 1, 1),
                     param_count=param_count,
-
                     # Sensitivity signals
                     hessian_trace=hessian_trace,
                     hessian_is_psd=hessian_is_psd,
@@ -338,7 +421,6 @@ class HessianTraceScorer:
                     activation_max_magnitude=activation_max_magnitude,
                     weight_range=weight_ranges.get(name, 0.0),
                     weight_kurtosis=weight_kurtoses.get(name, 0.0),
-
                     memory_bytes={},
                     latency_us={},
                     peak_memory_bytes={},
