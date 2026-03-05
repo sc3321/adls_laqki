@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -54,3 +59,46 @@ class LayerProfile(BaseModel):
 
     def to_dict(self) -> dict:
         return self.model_dump()
+
+
+class ModelProfileResult(BaseModel):
+    """Top-level output of profile_all_layers -- complete profile payload."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: int = 1
+    generated_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    qpe_version: str
+    torch_version: str
+    torchao_version: str | None = None
+    gpu_name: str
+    model_id: str
+    batch_size: int
+    seq_len: int
+    entries: dict[str, dict[str, LayerProfile]]
+    layer_metas: dict[str, LayerMeta]
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = self.model_dump(exclude={"entries", "layer_metas"})
+        payload["entries"] = {
+            layer_name: {
+                precision: profile.to_dict()
+                for precision, profile in per_precision.items()
+            }
+            for layer_name, per_precision in self.entries.items()
+        }
+        payload["layer_metas"] = {
+            layer_name: layer_meta.to_dict()
+            for layer_name, layer_meta in self.layer_metas.items()
+        }
+        return payload
+
+    def to_json(self, path: str | Path) -> None:
+        target_path = Path(path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(
+            json.dumps(self.to_dict(), indent=2),
+            encoding="utf-8",
+        )
