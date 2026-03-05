@@ -12,6 +12,7 @@ from .calibration.models import CalibrationConfig
 from .export import ConfigurationExporter, ExportResult
 from .profiler import LayerProfiler, GPUSpec
 from .profiler.gpu_specs import GPU_REGISTRY, detect_gpu
+from .profiler.models import ModelProfileResult
 from .scorer.base import SensitivityScorer
 from .solver import (
     SolverConfig,
@@ -174,7 +175,7 @@ class Pipeline:
     #  Stage 3: Profiling
     def _profiling_stage(
         self, model: nn.Module, scorer_output: List[LayerDescriptor]
-    ) -> Dict[str, Dict]:
+    ) -> ModelProfileResult:
         """Run hardware profiler on all scored layers."""
         layer_names = [ld.layer_name for ld in scorer_output]
         return self.profiler.profile_all_layers(
@@ -188,7 +189,7 @@ class Pipeline:
     def _assembly_stage(
         self,
         scorer_output: List[LayerDescriptor],
-        profiler_output: Dict[str, Dict],
+        profiler_output: ModelProfileResult,
     ) -> SolverInput:
         """Merge scorer and profiler outputs into SolverInput."""
         return self._assemble_solver_input(
@@ -326,7 +327,7 @@ class Pipeline:
     def _assemble_solver_input(
         self,
         scorer_output: list[LayerDescriptor],
-        profiler_output: Dict[str, Dict],
+        profiler_output: ModelProfileResult,
         model_id: str,
         gpu_spec: GPUSpec,
     ) -> SolverInput:
@@ -338,7 +339,7 @@ class Pipeline:
         """
         complete_layers = []
         for layer_desc in scorer_output:
-            resource_data = profiler_output[layer_desc.layer_name]
+            resource_data = profiler_output.entries[layer_desc.layer_name]
 
             memory_bytes: Dict[str, int] = {}
             latency_us: Dict[str, float] = {}
@@ -346,12 +347,12 @@ class Pipeline:
             kernel_name: Dict[str, str] = {}
             is_memory_bound: Dict[str, bool] = {}
 
-            for prec_str, metrics in resource_data.items():
-                memory_bytes[prec_str] = metrics["memory_bytes"]
-                latency_us[prec_str] = metrics["latency_us"]
-                peak_memory_bytes[prec_str] = metrics["peak_memory_bytes"]
-                kernel_name[prec_str] = metrics["kernel_name"]
-                is_memory_bound[prec_str] = metrics["is_memory_bound"]
+            for prec_str, profile in resource_data.items():
+                memory_bytes[prec_str] = profile.memory_bytes
+                latency_us[prec_str] = profile.latency_us
+                peak_memory_bytes[prec_str] = profile.peak_memory_bytes
+                kernel_name[prec_str] = profile.kernel_name
+                is_memory_bound[prec_str] = profile.is_memory_bound
 
             complete_layers.append(layer_desc.model_copy(update={
                 "memory_bytes": memory_bytes,
