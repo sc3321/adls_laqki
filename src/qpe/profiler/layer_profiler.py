@@ -12,108 +12,34 @@ import torch.nn as nn
 from qpe.profiler.gpu_specs import GPUSpec
 from qpe.utils.types import Precision
 from .cache import ProfileCache
-from .models import LayerMeta, LayerProfile
+from .models import LayerMeta, LayerProfile, ModelProfileResult
 
 log = logging.Logger()
 
-def _quantize_layer(layer: nn.Module, precision: Precision, gpu_spec: GPUSpec) -> nn.Module:
-    if precision == Precision.FP16:
-        return layer
+from qpe.utils.model_utils import (
+    get_layer_names,
+    _get_layer_dtype,
+    _get_layer_shape,
+    _quantize_layer,
+)
+from benchmark.util import _make_benchmark_input
+from src.benchmark.measurements import (
+    _time_layer,
+    _is_memory_bound,
+    _get_gpu_mem_usage,
+    _get_ops_per_byte,
+    _get_weight_memory_bytes,
+    _measure_peak_memory,
+)
 
-    if precision == Precision.W8A8_FP8 and not gpu_spec.supports_fp8:
-        log.debug("GPU does not support FP8; using FP16 for latency of W8A8_FP8.")
-        return layer
 
+def _get_torchao_version() -> str | None:
     try:
-        from torchao.quantization import (
-            float8_weight_only,
-            int4_weight_only,
-            int8_dynamic_activation_int8_weight,
-            quantize_,
-        )
-    except ImportError:
-        log.warning("torchao not installed; latency for %s will be measured as FP16.", precision.value)
-        return layer
+        import torchao  # type: ignore
 
-    try:
-        q = copy.deepcopy(layer)
-        if precision == Precision.W8A8_FP8:
-            quantize_(q, float8_weight_only())
-        elif precision == Precision.W8A8_INT8:
-            quantize_(q, int8_dynamic_activation_int8_weight())
-        elif precision == Precision.W4A16:
-            quantize_(q, int4_weight_only(group_size=128))
-        return q
-    except Exception as e:
-        log.warning("quantize_ failed for %s (%s); using FP16 layer for latency.", precision.value, e)
-        return layer
-
-
-def _resolve_layers(model: nn.Module, layer_names: List[str]) -> Dict[str, nn.Module]:
-    """
-    Extract named modules form model
-    """
-    modules = {}
-    for name in layer_names:
-        try:
-            modules[name] = model.get_submodule(name)
-        except AttributeError:
-            raise KeyError(
-                f"Model has no layer {name} \n -> Available : {[n for n, _ in model.named_children()]}"
-            )
-    return modules
-
-
-def _get_layer_shape(module: nn.Module) -> Tuple[int, ...]:
-    if isinstance(module, nn.Linear):
-        return (module.out_features, module.in_features)
-    # TODO : extend for other module types
-    return tuple(next(module.parameters()).shape)
-
-
-def _get_layer_dtype(layer: nn.Module) -> str:
-    # Check parameters first, then buffers
-    tensors = list(layer.parameters()) + list(layer.buffers())
-    if not tensors:
-        return "unknown"
-
-    return str(tensors[0].dtype)
-
-def _make_benchmark_input(
-    batch_size: int,
-    sequence_length: int,
-    module: nn.Module,
-    device: torch.device,
-) -> torch.Tensor:
-    """
-    Benchmark input for a layer.
-
-    We keep inputs floating-point. For CUDA profiling we use fp16 inputs
-    to match layer.half() profiling and avoid dtype mismatch.
-    """
-    if isinstance(module, nn.Linear):
-        in_features = module.in_features
-    else:
-        in_features = next(module.parameters()).shape[-1]
-
-    # Always use fp16 on CUDA for profiling (matches layer.half()).
-    if device.type == "cuda":
-        inp_dtype = torch.float16
-    else:
-        # CPU fallback: match module dtype if possible
-        try:
-            inp_dtype = next(module.parameters()).dtype
-        except StopIteration:
-            inp_dtype = torch.float32
-
-    return torch.randn(
-        batch_size,
-        sequence_length,
-        in_features,
-        dtype=inp_dtype,
-        device=device,
-    )
-
+        return getattr(torchao, "__version__", "unknown")
+    except Exception:
+        return None
 
 
 class LayerProfiler:
@@ -162,39 +88,27 @@ class LayerProfiler:
         layer_names: List[str],
         target_batch_size: int = 1,
         model_id: str = "unknown",
-    ) -> Dict[str, Dict]:
+    ) -> ModelProfileResult:
         """
         Profile all named layers across every supported precision.
 
-        Returns:
-            {
-                layer_name: {
-                    <precision>: LayerProfile.to_dict()
-                        -- keys: latency_us, memory_bytes, peak_memory_bytes,
-                           is_memory_bound, kernel_name, p50_us, p99_us
-                    ...
-                },
-                "__layer_metas__": {
-                    layer_name: LayerMeta.to_dict()
-                        -- keys: layer_type, layer_shape, dtype, param_count
-                    ...
-                }
-            }
+        Returns a ModelProfileResult with typed LayerProfile and LayerMeta
+        entries for all profiled layers.
 
         Only nn.Linear layers are profiled; others are skipped.
         Results are cached to disk and reloaded on subsequent calls.
         """
-        layer_metas: Dict[str, Dict] = {}
+        layer_metas: Dict[str, LayerMeta] = {}
 
-        # Cache-hit path: return cached profiles, but still attach metas from live model.
+        # Cache-hit path: return cached profiles and recompute metas from live model.
         if self.profile_cache.is_model_complete(model_id):
-            cached = self._load_cached_profiles(
+            cached_entries = self._load_cached_profiles(
                 model=model,
                 layer_names=layer_names,
                 target_batch_size=target_batch_size,
                 model_id=model_id,
             )
-            if cached is not None:
+            if cached_entries is not None:
                 named = dict(model.named_modules())
                 for name in layer_names:
                     layer = named.get(name)
@@ -205,12 +119,21 @@ class LayerProfiler:
                         layer_shape=list(_get_layer_shape(layer)),
                         dtype=_get_layer_dtype(layer),
                         param_count=int(sum(p.numel() for p in layer.parameters())),
-                    ).to_dict()
-                cached["__layer_metas__"] = layer_metas
-                return cached
+                    )
+                return ModelProfileResult(
+                    qpe_version=self.qpe_version,
+                    torch_version=torch.__version__,
+                    torchao_version=_get_torchao_version(),
+                    gpu_name=self.gpu_spec.name,
+                    model_id=model_id,
+                    batch_size=target_batch_size,
+                    seq_len=self.seq_len,
+                    entries=cached_entries,
+                    layer_metas=layer_metas,
+                )
 
         self._lock_gpu_clocks()
-        results: Dict[str, Dict] = {}
+        entries: Dict[str, Dict[str, LayerProfile]] = {}
         named = dict(model.named_modules())
 
         try:
@@ -221,7 +144,11 @@ class LayerProfiler:
 
                 layer = named[name]
                 if not isinstance(layer, nn.Linear):
-                    log.debug("Skipping non-Linear layer '%s' (%s).", name, type(layer).__name__)
+                    log.debug(
+                        "Skipping non-Linear layer '%s' (%s).",
+                        name,
+                        type(layer).__name__,
+                    )
                     continue
 
                 layer_metas[name] = LayerMeta(
@@ -229,10 +156,10 @@ class LayerProfiler:
                     layer_shape=list(_get_layer_shape(layer)),
                     dtype=_get_layer_dtype(layer),
                     param_count=int(sum(p.numel() for p in layer.parameters())),
-                ).to_dict()
+                )
 
                 log.info("[%d/%d] Profiling %s ...", idx + 1, len(layer_names), name)
-                results[name] = self._profile_single_layer(
+                entries[name] = self._profile_single_layer(
                     model_id=model_id,
                     layer_name=name,
                     layer=layer,
@@ -241,8 +168,17 @@ class LayerProfiler:
         finally:
             self._unlock_gpu_clocks()
 
-        results["__layer_metas__"] = layer_metas
-        return results
+        return ModelProfileResult(
+            qpe_version=self.qpe_version,
+            torch_version=torch.__version__,
+            torchao_version=_get_torchao_version(),
+            gpu_name=self.gpu_spec.name,
+            model_id=model_id,
+            batch_size=target_batch_size,
+            seq_len=self.seq_len,
+            entries=entries,
+            layer_metas=layer_metas,
+        )
 
     def _profile_single_layer(
         self,
@@ -250,9 +186,9 @@ class LayerProfiler:
         layer_name: str,
         layer: nn.Module,
         batch_size: int,
-    ) -> Dict:
+    ) -> Dict[str, LayerProfile]:
         # Hold precision to layer profile at that quantization
-        result: Dict[str, Dict] = {}
+        result: Dict[str, LayerProfile] = {}
 
         inputs = _make_benchmark_input(batch_size, self.seq_len, layer, self._device)
 
@@ -265,8 +201,10 @@ class LayerProfiler:
 
         for prec in self._available_precisions:
             pv = prec.value
-            if layer_profile := self.profile_cache.get(model_id, layer_name, batch_size, pv):
-                result[pv] = layer_profile
+            if cached_profile := self.profile_cache.get(
+                model_id, layer_name, batch_size, pv
+            ):
+                result[pv] = LayerProfile.from_dict(cached_profile)
                 continue
 
             q_layer = _quantize_layer(layer.half(), prec, self.gpu_spec)
@@ -294,14 +232,13 @@ class LayerProfiler:
                 p50_us=lat,
                 p99_us=lat,
             )
-            layer_profile = lp.to_dict()
-            result[pv] = layer_profile
+            result[pv] = lp
             self.profile_cache.put(
                 model_id=model_id,
                 layer_name=layer_name,
                 batch_size=batch_size,
                 precision=pv,
-                data=layer_profile,
+                data=lp.to_dict(),
                 layer_meta=meta.to_dict(),
             )
 
@@ -321,10 +258,10 @@ class LayerProfiler:
         layer_names: List[str],
         target_batch_size: int,
         model_id: str,
-    ) -> Dict[str, Dict] | None:
+    ) -> Dict[str, Dict[str, LayerProfile]] | None:
         """Load cached profiles for all requested layers and precisions."""
         named = dict(model.named_modules())
-        cached: Dict[str, Dict] = {}
+        cached: Dict[str, Dict[str, LayerProfile]] = {}
         for name in layer_names:
             if name not in named:
                 continue
@@ -333,7 +270,7 @@ class LayerProfiler:
             if not isinstance(layer, nn.Linear):
                 continue
 
-            layer_profiles: Dict[str, Dict] = {}
+            layer_profiles: Dict[str, LayerProfile] = {}
             for precision in self._available_precisions:
                 profile = self.profile_cache.get(
                     model_id=model_id,
@@ -343,7 +280,7 @@ class LayerProfiler:
                 )
                 if profile is None:
                     return None
-                layer_profiles[precision.value] = profile
+                layer_profiles[precision.value] = LayerProfile.from_dict(profile)
             cached[name] = layer_profiles
 
         log.info(
@@ -378,7 +315,9 @@ class LayerProfiler:
                 )
                 log.debug("GPU clocks locked to %s MHz.", clock)
         except (FileNotFoundError, subprocess.TimeoutExpired, PermissionError):
-            log.debug("Could not lock GPU clocks (nvidia-smi unavailable or no permission).")
+            log.debug(
+                "Could not lock GPU clocks (nvidia-smi unavailable or no permission)."
+            )
 
     def _unlock_gpu_clocks(self) -> None:
         """Restore dynamic GPU clock management."""
