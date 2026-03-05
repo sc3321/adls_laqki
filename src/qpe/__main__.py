@@ -9,7 +9,6 @@ import torch.nn as nn
 
 from qpe.profiler.gpu_specs import GPUSpec
 from qpe.profiler.layer_profiler import LayerProfiler
-from qpe.profiler.exporter import build_profile_table, write_profile_json
 
 log = logging.getLogger("qpe.cli")
 
@@ -145,27 +144,19 @@ def main() -> None:
 
     layer_names = [s.strip() for s in args.layers.split(",") if s.strip()] or _default_layer_names(model)
 
-    profiles = profiler.profile_all_layers(
+    profile_result = profiler.profile_all_layers(
         model=model,
         layer_names=layer_names,
         target_batch_size=args.batch_size,
         model_id=args.model_id,
     )
 
-    layer_metas = profiles.pop("__layer_metas__", {})
-
-    table = build_profile_table(
-        profiles=profiles,
-        model_id=args.model_id,
-        gpu_name=gpu_spec.name,
-        qpe_version=profiler.qpe_version,
-        batch_size=args.batch_size,
-        seq_len=args.seq_len,
-        layer_metas=layer_metas,
+    profile_result.to_json(args.out)
+    log.info(
+        "Wrote %d layer entries to %s",
+        len(profile_result.entries),
+        args.out,
     )
-
-    write_profile_json(args.out, table)
-    log.info("Wrote %d layer entries to %s", len(table.get("entries", {})), args.out)
 
 
 if __name__ == "__main__":
