@@ -7,8 +7,9 @@ from .util import (
     _build_vllm_bench_cmd,
     _build_vllm_server_cmd,
     _wait_for_vllm_server,
-    _get_gpu_mem_usage,
 )
+
+from .measurements import _get_gpu_mem_usage
 
 
 class ServingBenchmark:
