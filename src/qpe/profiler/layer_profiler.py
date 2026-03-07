@@ -14,7 +14,7 @@ from qpe.utils.types import Precision
 from .cache import ProfileCache
 from .models import LayerMeta, LayerProfile, ModelProfileResult
 
-log = logging.Logger()
+log = logging.Logger(__name__)
 
 from qpe.utils.model_utils import (
     get_layer_names,
