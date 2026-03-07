@@ -91,10 +91,17 @@ def _measure_peak_memory(layer: nn.Module, inputs: torch.Tensor, device: torch.d
     torch.cuda.synchronize()
     return torch.cuda.max_memory_allocated(device)
 
-def _get_weight_memory_bytes(module: nn.Module) -> int:
+def _get_weight_memory_bytes(module: nn.Module, precision: Precision | None = None) -> int:
     """
-    Get total size in bytes of weights
+    Get total size in bytes of weights at the target precision.
+    Uses _BYTES_PER_PARAM when precision is given; falls back to actual element_size().
     """
+    bytes_per_param = _BYTES_PER_PARAM.get(precision.value, None) if precision is not None else None
+    if bytes_per_param is not None:
+        return int(
+            sum(param.numel() for param in module.parameters()) * bytes_per_param
+            + sum(buf.numel() * buf.element_size() for buf in module.buffers())
+        )
     return (
         sum(param.numel() * param.element_size() for param in module.parameters())
         + sum(buf.numel() * buf.element_size() for buf in module.buffers())
@@ -126,7 +133,7 @@ def _is_memory_bound(
 
     flops = 2 * input_size * n_feat_in * n_feat_out
 
-    weight_bytes = _get_weight_memory_bytes(module)
+    weight_bytes = _get_weight_memory_bytes(module, precision)
     input_bytes = input_tensor.numel() * input_tensor.element_size()
     output_bytes = input_size * n_feat_out * 2
 

@@ -218,7 +218,7 @@ class LayerProfiler:
             )
             lp = LayerProfile(
                 latency_us=lat,
-                memory_bytes=_get_weight_memory_bytes(q_layer),
+                memory_bytes=_get_weight_memory_bytes(q_layer, prec),
                 peak_memory_bytes=_measure_peak_memory(q_layer, inputs, self._device),
                 is_memory_bound=_is_memory_bound(
                     module=q_layer,
