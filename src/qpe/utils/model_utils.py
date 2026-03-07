@@ -97,7 +97,7 @@ def _quantize_layer(layer: nn.Module, precision, gpu_spec) -> nn.Module:
 
     try:
         from torchao.quantization import (
-            float8_weight_only,
+            float8_dynamic_activation_float8_weight,
             int4_weight_only,
             int8_dynamic_activation_int8_weight,
             quantize_,
@@ -108,7 +108,7 @@ def _quantize_layer(layer: nn.Module, precision, gpu_spec) -> nn.Module:
     try:
         q = copy.deepcopy(layer)
         if precision == Precision.W8A8_FP8:
-            quantize_(q, float8_weight_only())
+            quantize_(q, float8_dynamic_activation_float8_weight())
         elif precision == Precision.W8A8_INT8:
             quantize_(q, int8_dynamic_activation_int8_weight())
         elif precision == Precision.W4A16:
