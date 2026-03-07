@@ -91,6 +91,10 @@ def _quantize_layer(layer: nn.Module, precision, gpu_spec) -> nn.Module:
     if precision == Precision.W8A8_FP8 and not gpu_spec.supports_fp8:
         return layer
 
+    # torchao int4_weight_only kernels require sm_80+ (Ampere); T4 is sm_75
+    if precision == Precision.W4A16 and gpu_spec.compute_capability < (8, 0):
+        return layer
+
     try:
         from torchao.quantization import (
             float8_weight_only,

@@ -23,7 +23,7 @@ from qpe.utils.model_utils import (
     _quantize_layer,
 )
 from benchmark.util import _make_benchmark_input
-from src.benchmark.measurements import (
+from benchmark.measurements import (
     _time_layer,
     _is_memory_bound,
     _get_gpu_mem_usage,
@@ -218,10 +218,10 @@ class LayerProfiler:
             )
             lp = LayerProfile(
                 latency_us=lat,
-                memory_bytes=_get_weight_memory_bytes(layer),
+                memory_bytes=_get_weight_memory_bytes(q_layer),
                 peak_memory_bytes=_measure_peak_memory(q_layer, inputs, self._device),
                 is_memory_bound=_is_memory_bound(
-                    module=layer,
+                    module=q_layer,
                     input_tensor=inputs,
                     precision=prec,
                     gpu_spec=self.gpu_spec,
