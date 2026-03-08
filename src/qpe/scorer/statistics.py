@@ -376,7 +376,10 @@ class HutchinsonTraceCalculator:
             batch_samples = {k: v.to(device) for k, v in batch.items()}
 
             # build a brand-new computation graph
-            outputs = model(**batch_samples)
+            # flash/efficient attention kernels don't support second-order grads
+            # needed for Hutchinson HVP; fall back to math backend
+            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+                outputs = model(**batch_samples)
             loss = outputs.loss
 
             # grads and HVPs for this group
