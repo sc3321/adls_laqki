@@ -1,0 +1,23 @@
+{
+  "_layer_meta": {
+    "dtype": "torch.float32",
+    "layer_shape": [
+      256,
+      128
+    ],
+    "layer_type": "Linear",
+    "param_count": 32768
+  },
+  "batch_size": 1,
+  "fallback_occurred": false,
+  "is_memory_bound": true,
+  "kernel_name": "cublas",
+  "latency_us": 3.6960000870749354,
+  "p50_us": 3.6960000870749354,
+  "p99_us": 4.095999989658594,
+  "peak_memory_bytes": 8619008,
+  "precision": "FP16",
+  "regime": "decode",
+  "seq_len": 1,
+  "weight_bytes": 65536
+}

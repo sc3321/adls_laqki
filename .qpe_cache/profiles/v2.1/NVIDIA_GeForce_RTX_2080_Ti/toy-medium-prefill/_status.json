@@ -1,0 +1,36 @@
+{
+  "expected_precisions": [
+    "FP16"
+  ],
+  "layers": {
+    "0": {
+      "complete": true,
+      "points": {
+        "bs_1|seq_1024|regime_prefill": {
+          "batch_size": 1,
+          "complete": true,
+          "profiled": [
+            "FP16"
+          ],
+          "regime": "prefill",
+          "seq_len": 1024
+        }
+      }
+    },
+    "2": {
+      "complete": true,
+      "points": {
+        "bs_1|seq_1024|regime_prefill": {
+          "batch_size": 1,
+          "complete": true,
+          "profiled": [
+            "FP16"
+          ],
+          "regime": "prefill",
+          "seq_len": 1024
+        }
+      }
+    }
+  },
+  "model_complete": true
+}

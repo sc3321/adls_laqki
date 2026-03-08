@@ -1,0 +1,9 @@
+{
+  "dtype": "torch.float32",
+  "layer_shape": [
+    128,
+    128
+  ],
+  "layer_type": "Linear",
+  "param_count": 16384
+}

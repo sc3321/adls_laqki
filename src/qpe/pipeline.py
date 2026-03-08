@@ -10,22 +10,22 @@ from torch.utils.data import DataLoader
 from .calibration.manager import CalibrationDataManager
 from .calibration.models import CalibrationConfig
 from .export import ConfigurationExporter, ExportResult
-from .profiler import LayerProfiler, GPUSpec
+from .profiler import GPUSpec, LayerProfiler
 from .profiler.gpu_specs import GPU_REGISTRY, detect_gpu
 from .profiler.models import ModelProfileResult
 from .scorer.base import SensitivityScorer
 from .solver import (
+    LayerDescriptor,
     SolverConfig,
+    SolverFactory,
     SolverInput,
     SolverOutput,
-    SolverFactory,
-    LayerDescriptor,
 )
-from .solver.config import ResourceMinimizerConfig, ParetoExplorerConfig
+from .solver.config import ParetoExplorerConfig, ResourceMinimizerConfig
 from .solver.models import FeedbackSignal
 from .solver.protocol import QuantizationSolver
+from .utils.model_utils import get_quantizable_layers, load_model
 from .utils.types import Precision
-from .utils.model_utils import load_model, get_quantizable_layers
 from .validation.config import ValidationConfig
 from .validation.engine import ValidationEngine
 
@@ -34,15 +34,18 @@ log = logging.getLogger(__name__)
 
 class PipelineConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
+
     model_id: str
     calibration: CalibrationConfig = CalibrationConfig()
     validation: ValidationConfig = ValidationConfig()
     solver: SolverConfig
+
     export_target: str = "vllm"
     output_dir: str = "./qpe_output"
 
     gpu_spec_name: str | None = None
     target_batch_size: int = 1
+    target_regime: str = "decode"
 
     max_feedback_iterations: int = 5
     wandb_project: str = "qpe"
@@ -51,6 +54,7 @@ class PipelineConfig(BaseModel):
 
 class PipelineResult(BaseModel):
     """Complete output of a QPE pipeline run."""
+
     model_config = ConfigDict(frozen=True)
 
     solver_output: SolverOutput
@@ -86,10 +90,8 @@ class Pipeline:
         self.validator = validator
         self.exporter = exporter
         self.config = config
-        self.solver : QuantizationSolver = SolverFactory.create(config.solver)
+        self.solver: QuantizationSolver = SolverFactory.create(config.solver)
         self.gpu_spec = self._resolve_gpu_spec()
-
-    #  GPU resolution
 
     def _resolve_gpu_spec(self) -> GPUSpec:
         """Resolve GPU spec from config name or auto-detect."""
@@ -102,7 +104,6 @@ class Pipeline:
             return GPU_REGISTRY[self.config.gpu_spec_name]
         return detect_gpu()
 
-    #  Top-level run: delegates to stage methods
     def run(self) -> PipelineResult:
         pipeline_start = time.perf_counter()
         warnings: list[str] = []
@@ -138,9 +139,7 @@ class Pipeline:
         solving_time = time.perf_counter() - solving_start
 
         validation_time = 0.0
-
         export_result = self._export_stage(solver_output)
-
         total_wall_time = time.perf_counter() - pipeline_start
 
         return PipelineResult(
@@ -157,35 +156,36 @@ class Pipeline:
             warnings=warnings,
         )
 
-    #  Stage 1: Setup
     def _setup_stage(self) -> tuple[nn.Module, DataLoader]:
         """Load model and calibration data."""
         model = load_model(self.config.model_id)
         dataloader = self.calibration_manager.get_dataloader()
         return model, dataloader
 
-    #  Stage 2: Scoring
     def _scoring_stage(
-        self, model: nn.Module, dataloader: DataLoader
+        self,
+        model: nn.Module,
+        dataloader: DataLoader,
     ) -> List[LayerDescriptor]:
         """Run sensitivity scorer on all quantizable layers."""
         layer_names = get_quantizable_layers(model)
         return self.scorer.score(model, dataloader, layer_names=layer_names)
 
-    #  Stage 3: Profiling
     def _profiling_stage(
-        self, model: nn.Module, scorer_output: List[LayerDescriptor]
+        self,
+        model: nn.Module,
+        scorer_output: List[LayerDescriptor],
     ) -> ModelProfileResult:
         """Run hardware profiler on all scored layers."""
         layer_names = [ld.layer_name for ld in scorer_output]
         return self.profiler.profile_all_layers(
-            model,
+            model=model,
             layer_names=layer_names,
             target_batch_size=self.config.target_batch_size,
             model_id=self.config.model_id,
+            regime=self.config.target_regime,
         )
 
-    #  Stage 4: Assembly
     def _assembly_stage(
         self,
         scorer_output: List[LayerDescriptor],
@@ -199,9 +199,10 @@ class Pipeline:
             gpu_spec=self.gpu_spec,
         )
 
-    #  Stage 5: Solve-Validate feedback loop
     def _solve_validate_stage(
-        self, model: nn.Module, solver_input: SolverInput
+        self,
+        model: nn.Module,
+        solver_input: SolverInput,
     ) -> tuple[SolverOutput, FeedbackSignal, int]:
         """Run the solve -> validate -> feedback loop."""
         solver_output = None
@@ -215,6 +216,7 @@ class Pipeline:
 
             if solver_output.solver_status == "infeasible":
                 from .error_handling.types import InfeasibleError
+
                 raise InfeasibleError(
                     "No valid assignment exists under current constraints - "
                     "consider relaxing memory budget, quality budget, or "
@@ -222,12 +224,18 @@ class Pipeline:
                 )
 
             feedback = self.validator.validate(
-                model, self.config.model_id, solver_output, stage="screening"
+                model,
+                self.config.model_id,
+                solver_output,
+                stage="screening",
             )
 
             if feedback.passed:
                 full_feedback = self.validator.validate(
-                    model, self.config.model_id, solver_output, stage="full"
+                    model,
+                    self.config.model_id,
+                    solver_output,
+                    stage="full",
                 )
                 if full_feedback.passed:
                     feedback = full_feedback
@@ -243,7 +251,6 @@ class Pipeline:
 
         return solver_output, feedback, iteration + 1
 
-    #  Stage 6: Export
     def _export_stage(self, solver_output: SolverOutput) -> ExportResult:
         """Export the final quantization assignment."""
         return self.exporter.export(
@@ -252,8 +259,6 @@ class Pipeline:
             target=self.config.export_target,
             output_dir=self.config.output_dir,
         )
-
-    #  Feedback application
 
     def _apply_feedback(
         self,
@@ -264,10 +269,14 @@ class Pipeline:
         """
         Translate validation feedback into solver constraint modifications.
 
-        Quality-minimizing mode: pin highest-KL layers to FP16, re-create solver.
-        Resource-minimizing mode: scale quality_budget_proxy by the suggested
-            factor; optionally pin worst layers. Re-create solver.
-        Pareto mode: no feedback adjustment, return solver unchanged.
+        Quality-minimizing mode:
+          pin highest-KL layers to FP16, then recreate solver.
+
+        Resource-minimizing mode:
+          scale quality_budget_proxy and optionally pin worst layers.
+
+        Pareto mode:
+          no feedback adjustment.
         """
         from .solver.config import QualityMinimizerConfig
 
@@ -286,7 +295,8 @@ class Pipeline:
         if isinstance(config, ResourceMinimizerConfig):
             updates: dict = {
                 "quality_budget_proxy": (
-                    config.quality_budget_proxy * feedback.suggested_quality_budget_scale
+                    config.quality_budget_proxy
+                    * feedback.suggested_quality_budget_scale
                 ),
             }
             if feedback.suggested_pin_to_fp16:
@@ -299,8 +309,6 @@ class Pipeline:
 
         return solver
 
-    #  Epsilon estimation for resource-minimizing mode
-
     def _estimate_initial_epsilon(
         self,
         solver_input: SolverInput,
@@ -310,19 +318,13 @@ class Pipeline:
         Heuristic initialization of eps for resource-minimizing mode.
 
         Strategy:
-        1. Compute proxy score for all-INT4 (eps_max = Sum Omega_i * 1.0).
-        2. Set initial eps = eps_max * (user_budget_pct / 100) * safety_margin.
-
-        The safety_margin (0.5) accounts for the proxy's tendency to
-        underestimate error at aggressive compression. The feedback loop
-        will bisect toward the true epsilon.
+          1. Compute proxy score for all-INT4.
+          2. Set initial eps = eps_max * (user_budget_pct / 100) * safety_margin.
         """
         sensitivities = self.solver._aggregate_sensitivities(solver_input.layers)
         epsilon_max = float(np.sum(sensitivities * 1.0))
         safety_margin = 0.5
         return epsilon_max * (user_quality_budget_pct / 100.0) * safety_margin
-
-    #  Solver input assembly
 
     def _assemble_solver_input(
         self,
@@ -334,10 +336,13 @@ class Pipeline:
         """
         Merge scorer and profiler outputs into complete LayerDescriptors.
 
-        The profiler returns {layer: {precision: {metric: value}}}.
-        This method transposes to {metric: {precision: value}} per layer.
+        The profiler returns:
+            {layer_name: {precision: LayerProfile}}
+
+        This method transposes that into per-layer dictionaries keyed by precision.
         """
         complete_layers = []
+
         for layer_desc in scorer_output:
             resource_data = profiler_output.entries[layer_desc.layer_name]
 
@@ -348,25 +353,31 @@ class Pipeline:
             is_memory_bound: Dict[str, bool] = {}
 
             for prec_str, profile in resource_data.items():
-                memory_bytes[prec_str] = profile.memory_bytes
-                latency_us[prec_str] = profile.latency_us
+                memory_bytes[prec_str] = profile.weight_bytes
+                latency_us[prec_str] = profile.p50_us
                 peak_memory_bytes[prec_str] = profile.peak_memory_bytes
                 kernel_name[prec_str] = profile.kernel_name
                 is_memory_bound[prec_str] = profile.is_memory_bound
 
-            complete_layers.append(layer_desc.model_copy(update={
-                "memory_bytes": memory_bytes,
-                "latency_us": latency_us,
-                "peak_memory_bytes": peak_memory_bytes,
-                "kernel_name": kernel_name,
-                "is_memory_bound": is_memory_bound,
-            }))
+            complete_layers.append(
+                layer_desc.model_copy(
+                    update={
+                        "memory_bytes": memory_bytes,
+                        "latency_us": latency_us,
+                        "peak_memory_bytes": peak_memory_bytes,
+                        "kernel_name": kernel_name,
+                        "is_memory_bound": is_memory_bound,
+                    }
+                )
+            )
 
         model_config = self._get_model_config(model_id)
         num_blocks = model_config.get("num_hidden_layers", len(complete_layers) // 7)
         hidden_size = model_config.get("hidden_size", 4096)
         num_kv_heads = model_config.get("num_key_value_heads", 32)
-        head_dim = hidden_size // model_config.get("num_attention_heads", 32)
+        num_attention_heads = model_config.get("num_attention_heads", 32)
+        head_dim = hidden_size // num_attention_heads
+
         kv_bytes_fp16 = 2 * num_kv_heads * head_dim * 2
         kv_bytes_fp8 = 2 * num_kv_heads * head_dim * 1
 
@@ -392,6 +403,7 @@ class Pipeline:
         """Load HuggingFace model config as a dict for metadata extraction."""
         try:
             from transformers import AutoConfig
+
             config = AutoConfig.from_pretrained(model_id)
             return config.to_dict()
         except Exception:
@@ -399,10 +411,10 @@ class Pipeline:
 
     def _filter_precisions(self, gpu_spec: GPUSpec) -> list[Precision]:
         """
-        Determine which Precision candidates are available on target GPU.
+        Determine which precision candidates are available on the target GPU.
         Filters by GPU hardware capabilities and kernel availability.
         """
-        available = []
+        available: list[Precision] = []
         candidate_set = set(p.value for p in self.config.solver.precision_candidates)
 
         for precision in Precision:
@@ -412,10 +424,16 @@ class Pipeline:
             if precision == Precision.FP16:
                 available.append(precision)
             elif precision == Precision.W8A8_FP8:
-                if gpu_spec.supports_fp8 and "W8A8_FP8" in gpu_spec.available_kernels:
+                if (
+                    gpu_spec.supports_fp8
+                    and "W8A8_FP8" in gpu_spec.available_kernels
+                ):
                     available.append(precision)
             elif precision == Precision.W8A8_INT8:
-                if gpu_spec.supports_int8_tensor_core and "W8A8_INT8" in gpu_spec.available_kernels:
+                if (
+                    gpu_spec.supports_int8_tensor_core
+                    and "W8A8_INT8" in gpu_spec.available_kernels
+                ):
                     available.append(precision)
             elif precision == Precision.W4A16:
                 if "W4A16" in gpu_spec.available_kernels:

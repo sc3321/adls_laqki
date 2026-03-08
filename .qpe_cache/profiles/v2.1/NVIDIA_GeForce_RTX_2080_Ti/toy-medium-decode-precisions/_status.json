@@ -1,0 +1,36 @@
+{
+  "expected_precisions": [
+    "FP16"
+  ],
+  "layers": {
+    "0": {
+      "complete": true,
+      "points": {
+        "bs_1|seq_1|regime_decode": {
+          "batch_size": 1,
+          "complete": true,
+          "profiled": [
+            "FP16"
+          ],
+          "regime": "decode",
+          "seq_len": 1
+        }
+      }
+    },
+    "2": {
+      "complete": true,
+      "points": {
+        "bs_1|seq_1|regime_decode": {
+          "batch_size": 1,
+          "complete": true,
+          "profiled": [
+            "FP16"
+          ],
+          "regime": "decode",
+          "seq_len": 1
+        }
+      }
+    }
+  },
+  "model_complete": true
+}

@@ -8,7 +8,30 @@ from typing import Any
 
 
 class ProfileCache:
-    """Filesystem cache organized by version, GPU, model, layer, and batch."""
+    """
+    Filesystem cache organized by version, GPU, model, layer, batch, seq_len, and regime.
+
+    Directory layout:
+
+        root_dir/
+          v{qpe_version}/
+            {gpu_name}/
+              _precisions.json
+              {model_id}/
+                _status.json
+                {layer_name}/
+                  _meta.json
+                  bs_{batch_size}/
+                    seq_{seq_len}/
+                      {regime}/
+                        {precision}.json
+
+    Status semantics:
+      - A measurement point is identified by (batch_size, seq_len, regime).
+      - A point is complete when all expected precision files exist.
+      - A layer is complete when all discovered points are complete.
+      - A model is complete when all discovered layers are complete.
+    """
 
     def __init__(
         self,
@@ -33,10 +56,19 @@ class ProfileCache:
         model_id: str,
         layer_name: str,
         batch_size: int,
+        seq_len: int,
+        regime: str,
         precision: str,
     ) -> dict | None:
         """Return a cached profile payload or None on cache miss."""
-        profile_path = self._profile_path(model_id, layer_name, batch_size, precision)
+        profile_path = self._profile_path(
+            model_id=model_id,
+            layer_name=layer_name,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            regime=regime,
+            precision=precision,
+        )
         if not profile_path.exists():
             return None
 
@@ -56,6 +88,8 @@ class ProfileCache:
         model_id: str,
         layer_name: str,
         batch_size: int,
+        seq_len: int,
+        regime: str,
         precision: str,
         data: dict,
         layer_meta: dict[str, Any],
@@ -63,32 +97,68 @@ class ProfileCache:
         """Write a profile payload and update completion status."""
         model_dir = self._model_dir(model_id)
         layer_dir = self._layer_dir(model_id, layer_name)
-        batch_dir = self._batch_dir(model_id, layer_name, batch_size)
+        point_dir = self._point_dir(
+            model_id=model_id,
+            layer_name=layer_name,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            regime=regime,
+        )
 
         model_dir.mkdir(parents=True, exist_ok=True)
         layer_dir.mkdir(parents=True, exist_ok=True)
-        batch_dir.mkdir(parents=True, exist_ok=True)
+        point_dir.mkdir(parents=True, exist_ok=True)
 
         self._write_json(layer_dir / "_meta.json", layer_meta)
 
         payload = dict(data)
         payload["_layer_meta"] = layer_meta
         self._write_json(
-            self._profile_path(model_id, layer_name, batch_size, precision), payload
+            self._profile_path(
+                model_id=model_id,
+                layer_name=layer_name,
+                batch_size=batch_size,
+                seq_len=seq_len,
+                regime=regime,
+                precision=precision,
+            ),
+            payload,
         )
-        self._update_status(model_id, layer_name, batch_size)
 
-    def is_batch_complete(self, model_id: str, layer_name: str, batch_size: int) -> bool:
-        """Return True if a batch has all expected precision profiles."""
+        self._update_status(
+            model_id=model_id,
+            layer_name=layer_name,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            regime=regime,
+        )
+
+    def is_batch_complete(
+        self,
+        model_id: str,
+        layer_name: str,
+        batch_size: int,
+        seq_len: int,
+        regime: str,
+    ) -> bool:
+        """
+        Return True if the specific (batch_size, seq_len, regime) point
+        has all expected precision profiles.
+        """
         status = self.verify(model_id)
-        layer_entry = status.get("layers", {}).get(layer_name, {})
-        batch_entry = layer_entry.get("batch_sizes", {}).get(str(batch_size), {})
-        return bool(batch_entry.get("complete", False))
+        layer_entry = status.get("layers", {}).get(
+            self._sanitize_layer_name(layer_name), {}
+        )
+        point_key = self._point_key(batch_size=batch_size, seq_len=seq_len, regime=regime)
+        point_entry = layer_entry.get("points", {}).get(point_key, {})
+        return bool(point_entry.get("complete", False))
 
     def is_layer_complete(self, model_id: str, layer_name: str) -> bool:
-        """Return True if all discovered batch directories are complete."""
+        """Return True if all discovered measurement points for this layer are complete."""
         status = self.verify(model_id)
-        layer_entry = status.get("layers", {}).get(layer_name, {})
+        layer_entry = status.get("layers", {}).get(
+            self._sanitize_layer_name(layer_name), {}
+        )
         return bool(layer_entry.get("complete", False))
 
     def is_model_complete(self, model_id: str) -> bool:
@@ -107,27 +177,55 @@ class ProfileCache:
         for layer_dir in sorted(model_dir.iterdir()):
             if not layer_dir.is_dir():
                 continue
+            if layer_dir.name.startswith("_"):
+                continue
 
-            layer_name = layer_dir.name
-            batch_map: dict[str, dict[str, Any]] = {}
+            sanitized_layer_name = layer_dir.name
+            points: dict[str, dict[str, Any]] = {}
 
             for batch_dir in sorted(layer_dir.iterdir()):
                 if not batch_dir.is_dir() or not batch_dir.name.startswith("bs_"):
                     continue
 
-                batch_key = batch_dir.name.removeprefix("bs_")
-                profiled_precisions = self._profiled_precisions(batch_dir)
-                batch_complete = self._has_all_precisions(profiled_precisions)
-                batch_map[batch_key] = {
-                    "profiled": profiled_precisions,
-                    "complete": batch_complete,
-                }
+                batch_size = self._parse_prefixed_int(batch_dir.name, prefix="bs_")
+                if batch_size is None:
+                    continue
 
-            layer_complete = bool(batch_map) and all(
-                entry.get("complete", False) for entry in batch_map.values()
+                for seq_dir in sorted(batch_dir.iterdir()):
+                    if not seq_dir.is_dir() or not seq_dir.name.startswith("seq_"):
+                        continue
+
+                    seq_len = self._parse_prefixed_int(seq_dir.name, prefix="seq_")
+                    if seq_len is None:
+                        continue
+
+                    for regime_dir in sorted(seq_dir.iterdir()):
+                        if not regime_dir.is_dir():
+                            continue
+
+                        regime = regime_dir.name
+                        profiled_precisions = self._profiled_precisions(regime_dir)
+                        point_complete = self._has_all_precisions(profiled_precisions)
+                        point_key = self._point_key(
+                            batch_size=batch_size,
+                            seq_len=seq_len,
+                            regime=regime,
+                        )
+
+                        points[point_key] = {
+                            "batch_size": batch_size,
+                            "seq_len": seq_len,
+                            "regime": regime,
+                            "profiled": profiled_precisions,
+                            "complete": point_complete,
+                        }
+
+            layer_complete = bool(points) and all(
+                entry.get("complete", False) for entry in points.values()
             )
-            status["layers"][layer_name] = {
-                "batch_sizes": batch_map,
+
+            status["layers"][sanitized_layer_name] = {
+                "points": points,
                 "complete": layer_complete,
             }
 
@@ -159,6 +257,21 @@ class ProfileCache:
     def _sanitize_layer_name(layer_name: str) -> str:
         return layer_name.replace("/", "_").replace("\\", "_").replace(":", "_")
 
+    @staticmethod
+    def _sanitize_regime(regime: str) -> str:
+        return regime.replace("/", "_").replace("\\", "_").replace(":", "_").replace(" ", "_")
+
+    @staticmethod
+    def _point_key(batch_size: int, seq_len: int, regime: str) -> str:
+        return f"bs_{batch_size}|seq_{seq_len}|regime_{regime}"
+
+    @staticmethod
+    def _parse_prefixed_int(name: str, prefix: str) -> int | None:
+        if not name.startswith(prefix):
+            return None
+        suffix = name[len(prefix) :]
+        return int(suffix) if suffix.isdigit() else None
+
     def _model_dir(self, model_id: str) -> Path:
         return self.gpu_dir / self._sanitize_model_id(model_id)
 
@@ -168,10 +281,41 @@ class ProfileCache:
     def _batch_dir(self, model_id: str, layer_name: str, batch_size: int) -> Path:
         return self._layer_dir(model_id, layer_name) / f"bs_{batch_size}"
 
-    def _profile_path(
-        self, model_id: str, layer_name: str, batch_size: int, precision: str
+    def _seq_dir(
+        self,
+        model_id: str,
+        layer_name: str,
+        batch_size: int,
+        seq_len: int,
     ) -> Path:
-        return self._batch_dir(model_id, layer_name, batch_size) / f"{precision}.json"
+        return self._batch_dir(model_id, layer_name, batch_size) / f"seq_{seq_len}"
+
+    def _point_dir(
+        self,
+        model_id: str,
+        layer_name: str,
+        batch_size: int,
+        seq_len: int,
+        regime: str,
+    ) -> Path:
+        return (
+            self._seq_dir(model_id, layer_name, batch_size, seq_len)
+            / self._sanitize_regime(regime)
+        )
+
+    def _profile_path(
+        self,
+        model_id: str,
+        layer_name: str,
+        batch_size: int,
+        seq_len: int,
+        regime: str,
+        precision: str,
+    ) -> Path:
+        return (
+            self._point_dir(model_id, layer_name, batch_size, seq_len, regime)
+            / f"{precision}.json"
+        )
 
     def _status_path(self, model_id: str) -> Path:
         return self._model_dir(model_id) / "_status.json"
@@ -204,23 +348,43 @@ class ProfileCache:
     def _save_status(self, model_id: str, status: dict[str, Any]) -> None:
         self._write_json(self._status_path(model_id), status)
 
-    def _update_status(self, model_id: str, layer_name: str, batch_size: int) -> None:
+    def _update_status(
+        self,
+        model_id: str,
+        layer_name: str,
+        batch_size: int,
+        seq_len: int,
+        regime: str,
+    ) -> None:
         status = self._load_status(model_id)
+        sanitized_layer_name = self._sanitize_layer_name(layer_name)
         layer_entry = status["layers"].setdefault(
-            layer_name,
-            {"batch_sizes": {}, "complete": False},
+            sanitized_layer_name,
+            {"points": {}, "complete": False},
         )
 
-        batch_dir = self._batch_dir(model_id, layer_name, batch_size)
-        profiled = self._profiled_precisions(batch_dir)
-        batch_complete = self._has_all_precisions(profiled)
-        layer_entry["batch_sizes"][str(batch_size)] = {
+        point_dir = self._point_dir(
+            model_id=model_id,
+            layer_name=layer_name,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            regime=regime,
+        )
+        profiled = self._profiled_precisions(point_dir)
+        point_complete = self._has_all_precisions(profiled)
+        point_key = self._point_key(batch_size=batch_size, seq_len=seq_len, regime=regime)
+
+        layer_entry["points"][point_key] = {
+            "batch_size": batch_size,
+            "seq_len": seq_len,
+            "regime": regime,
             "profiled": profiled,
-            "complete": batch_complete,
+            "complete": point_complete,
         }
-        layer_entry["complete"] = bool(layer_entry["batch_sizes"]) and all(
+
+        layer_entry["complete"] = bool(layer_entry["points"]) and all(
             entry.get("complete", False)
-            for entry in layer_entry["batch_sizes"].values()
+            for entry in layer_entry["points"].values()
         )
         status["model_complete"] = bool(status["layers"]) and all(
             entry.get("complete", False) for entry in status["layers"].values()
@@ -230,12 +394,12 @@ class ProfileCache:
     def _has_all_precisions(self, profiled: list[str]) -> bool:
         return set(self.supported_precisions).issubset(set(profiled))
 
-    def _profiled_precisions(self, batch_dir: Path) -> list[str]:
-        if not batch_dir.exists():
+    def _profiled_precisions(self, point_dir: Path) -> list[str]:
+        if not point_dir.exists():
             return []
 
         discovered: set[str] = set()
-        for path in batch_dir.iterdir():
+        for path in point_dir.iterdir():
             if not path.is_file():
                 continue
             if path.suffix != ".json":
@@ -261,5 +425,7 @@ class ProfileCache:
     @staticmethod
     def _write_json(path: Path, payload: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
+        path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )

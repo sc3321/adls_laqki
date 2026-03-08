@@ -1,36 +1,27 @@
 from __future__ import annotations
-import time
-from typing import Dict, List, Tuple
 
+import time
+from typing import Any
+
+import numpy as np
 import torch
 import torch.nn as nn
 
-from qpe.profiler.gpu_specs import GPUSpec
-from qpe.utils.types import Precision
-
-# Bytes per weight parameter for each precision.
-_BYTES_PER_PARAM: Dict[str, float] = {
-    Precision.FP16.value: 2.0,
-    Precision.W8A8_FP8.value: 1.0,
-    Precision.W8A8_INT8.value: 1.0,
-    Precision.W4A16.value: 0.5,
-}
-
-# Roofline threshold (FLOP/byte): layers below this are memory-bandwidth limited.
-_MEMORY_BOUND_THRESHOLD = 100.0
+from src.qpe.profiler.gpu_specs import GPUSpec
+from src.qpe.utils.types import Precision
 
 
-def _get_gpu_mem_usage() -> float : 
-    import pynvml
+def _get_gpu_mem_usage() -> float:
     try:
+        import pynvml
+
         pynvml.nvmlInit()
         handle = pynvml.nvmlDeviceGetHandleByIndex(0)
         info = pynvml.nvmlDeviceGetMemoryInfo(handle)
         pynvml.nvmlShutdown()
-        return info.used / (1024 ** 3)
+        return info.used / (1024**3)
     except Exception:
         return 0.0
-
 
 
 def _time_layer(
@@ -39,10 +30,27 @@ def _time_layer(
     num_warmup: int,
     num_measurements: int,
     device: torch.device,
-) -> float:
+) -> dict[str, Any]:
     """
-    Returns median latency in microseconds.
-    Uses torch.cuda.Event on GPU; falls back to time.perf_counter on CPU.
+    Measure layer forward latency.
+
+    Returns a structured timing summary with:
+      - latency_us: canonical solver-facing latency (equal to p50_us)
+      - p50_us
+      - p99_us
+      - mean_us
+      - std_us
+      - unstable
+      - total_measurement_time_s
+
+    CUDA path:
+      - warm up
+      - record one start/end event pair per iteration
+      - synchronize once after all measurements
+      - compute elapsed times from recorded events
+
+    CPU path:
+      - use time.perf_counter for each iteration
     """
     layer = layer.to(device)
     inputs = inputs.to(device)
@@ -51,51 +59,109 @@ def _time_layer(
     with torch.no_grad():
         for _ in range(num_warmup):
             layer(inputs)
-        if use_cuda:
-            torch.cuda.synchronize()
 
-        timings: List[float] = []
         if use_cuda:
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            for _ in range(num_measurements):
-                start.record()
+            torch.cuda.synchronize(device)
+
+        wall_t0 = time.perf_counter()
+        timings_us: list[float] = []
+
+        if use_cuda:
+            starts = [
+                torch.cuda.Event(enable_timing=True) for _ in range(num_measurements)
+            ]
+            ends = [
+                torch.cuda.Event(enable_timing=True) for _ in range(num_measurements)
+            ]
+
+            for i in range(num_measurements):
+                starts[i].record()
                 layer(inputs)
-                end.record()
-                torch.cuda.synchronize()
-                timings.append(start.elapsed_time(end) * 1_000.0)  # ms → µs
+                ends[i].record()
+
+            torch.cuda.synchronize(device)
+
+            timings_us = [
+                starts[i].elapsed_time(ends[i]) * 1_000.0
+                for i in range(num_measurements)
+            ]
         else:
             for _ in range(num_measurements):
                 t0 = time.perf_counter()
                 layer(inputs)
-                timings.append((time.perf_counter() - t0) * 1e6)
+                timings_us.append((time.perf_counter() - t0) * 1e6)
 
-    timings.sort()
-    return timings[len(timings) // 2]
+        total_measurement_time_s = time.perf_counter() - wall_t0
+
+    arr = np.asarray(timings_us, dtype=np.float64)
+    if arr.size == 0:
+        return {
+            "latency_us": 0.0,
+            "p50_us": 0.0,
+            "p99_us": 0.0,
+            "mean_us": 0.0,
+            "std_us": 0.0,
+            "unstable": True,
+            "total_measurement_time_s": total_measurement_time_s,
+        }
+
+    p50_us = float(np.percentile(arr, 50))
+    p99_us = float(np.percentile(arr, 99))
+    mean_us = float(arr.mean())
+    std_us = float(arr.std())
+    unstable = bool((std_us / mean_us) > 0.05) if mean_us > 0.0 else True
+
+    return {
+        "latency_us": p50_us,
+        "p50_us": p50_us,
+        "p99_us": p99_us,
+        "mean_us": mean_us,
+        "std_us": std_us,
+        "unstable": unstable,
+        "total_measurement_time_s": total_measurement_time_s,
+    }
 
 
-def _measure_peak_memory(layer: nn.Module, inputs: torch.Tensor, device: torch.device) -> int:
+def _measure_peak_memory(
+    layer: nn.Module,
+    inputs: torch.Tensor,
+    device: torch.device,
+) -> int:
     """
-    Returns peak memory in bytes during a single forward pass.
-    On CPU, returns a static estimate (weights + activations).
+    Return peak memory in bytes during a single forward pass.
+
+    On CPU, returns a simple estimate:
+      weights/buffers + 2x input bytes
     """
     if device.type != "cuda" or not torch.cuda.is_available():
-        return sum(p.nbytes for p in layer.parameters()) + inputs.nbytes * 2
+        return (
+            sum(p.numel() * p.element_size() for p in layer.parameters())
+            + sum(b.numel() * b.element_size() for b in layer.buffers())
+            + inputs.numel() * inputs.element_size() * 2
+        )
 
     layer = layer.to(device)
     inputs = inputs.to(device)
+
     torch.cuda.reset_peak_memory_stats(device)
-    torch.cuda.synchronize()
+    torch.cuda.synchronize(device)
+
     with torch.no_grad():
         layer(inputs)
-    torch.cuda.synchronize()
-    return torch.cuda.max_memory_allocated(device)
+
+    torch.cuda.synchronize(device)
+    return int(torch.cuda.max_memory_allocated(device))
+
 
 def _get_weight_memory_bytes(module: nn.Module) -> int:
     """
-    Get total size in bytes of weights
+    Return total storage in bytes for parameters + buffers of the given module.
+
+    Important:
+      This should be called on the quantized module (q_layer), not the original layer,
+      so that INT8 / INT4 / FP8 storage differences are reflected correctly.
     """
-    return (
+    return int(
         sum(param.numel() * param.element_size() for param in module.parameters())
         + sum(buf.numel() * buf.element_size() for buf in module.buffers())
     )
@@ -104,50 +170,58 @@ def _get_weight_memory_bytes(module: nn.Module) -> int:
 def _is_memory_bound(
     module: nn.Module,
     input_tensor: torch.Tensor,
+    weight_bytes: int,
     precision: Precision,
     gpu_spec: GPUSpec,
     batch_size: int,
     sequence_length: int,
 ) -> bool:
     """
-    Roofline heuristic: arithmetic intensity (FLOP/byte) < threshold → memory bound.
-    Non-Linear layers always return False (no meaningful roofline for activations etc.).
+    Roofline-style heuristic:
+      arithmetic_intensity = FLOPs / bytes_moved
+      memory-bound iff arithmetic_intensity < GPU peak ops/byte at this precision
+
+    Notes:
+      - weight_bytes must be passed explicitly from the profiled module so the
+        heuristic uses the quantized representation's true storage cost.
+      - output bytes currently assume FP16-like output activations (2 bytes each).
+        This is a first-pass heuristic, not an exact traffic model.
     """
+    input_size = batch_size * sequence_length
 
     if isinstance(module, nn.Linear):
-        input_size = batch_size * sequence_length
-        n_feat_out = module.out_features
-        n_feat_in = module.in_features
+        n_feat_in = int(module.in_features)
+        n_feat_out = int(module.out_features)
     else:
-        # estimate from parameter count
-        input_size = batch_size * sequence_length
         params = sum(p.numel() for p in module.parameters())
-        n_feat_in = n_feat_out = int(params**0.5)
+        n_feat_in = int(params**0.5)
+        n_feat_out = int(params**0.5)
 
-    flops = 2 * input_size * n_feat_in * n_feat_out
+    flops = 2.0 * input_size * n_feat_in * n_feat_out
 
-    weight_bytes = _get_weight_memory_bytes(module)
     input_bytes = input_tensor.numel() * input_tensor.element_size()
-    output_bytes = input_size * n_feat_out * 2
+    output_bytes = input_size * n_feat_out * 2  # heuristic: FP16-sized outputs
 
-    total_bytes = input_bytes + weight_bytes + output_bytes
-    intensity = flops / max(total_bytes, 1)
+    total_bytes = float(input_bytes + weight_bytes + output_bytes)
+    intensity = flops / max(total_bytes, 1.0)
 
-    return intensity < _get_ops_per_byte(precision, gpu_spec)
+    return bool(intensity < _get_ops_per_byte(precision, gpu_spec))
 
 
 def _get_ops_per_byte(
     precision: Precision,
     spec: GPUSpec,
 ) -> float:
-    # GPU ops:byte ratio at the precision's peak throughput
+    """
+    Return GPU peak arithmetic intensity threshold (ops/byte) for the given precision.
+    """
     bw_bytes_per_sec = spec.memory_bandwidth_tb_s * 1e12
 
-    if precision in (Precision.W8A8_FP8,) and spec.peak_fp8_tflops:
-        peak_flops = spec.peak_fp8_tflops * 1e12
-    elif precision in (Precision.W8A8_INT8,):
-        peak_flops = spec.peak_int8_tops * 1e12
+    if precision == Precision.W8A8_FP8 and getattr(spec, "peak_fp8_tflops", 0):
+        peak_ops_per_sec = spec.peak_fp8_tflops * 1e12
+    elif precision == Precision.W8A8_INT8:
+        peak_ops_per_sec = spec.peak_int8_tops * 1e12
     else:
-        peak_flops = spec.peak_fp16_tflops * 1e12
+        peak_ops_per_sec = spec.peak_fp16_tflops * 1e12
 
-    return peak_flops / bw_bytes_per_sec
+    return peak_ops_per_sec / bw_bytes_per_sec
