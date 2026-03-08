@@ -47,7 +47,7 @@ class CalibrationDataManager:
         # - If multiple datasets specified, interleave with config.dataset_weights
 
     def _is_sst2(self) -> bool:
-        return any("sst2" in d.lower() or "sst-2" in d.lower() for d in self.config.datasets)
+        return "sst2" in self.config.datasets
 
     def _load_sst2(self, split: str):
         from datasets import load_dataset
