@@ -191,7 +191,7 @@ class ActivationStatsCollector:
           - median_abs per channel
         """
         reduce_dims = spec.reduce_dims or tuple(
-            d for d in range(act.ndim) if d != spec.channel_dim
+            d for d in range(act.ndim) if d != spec.channel_dim % act.ndim
         )
 
         C = act.shape[spec.channel_dim]
