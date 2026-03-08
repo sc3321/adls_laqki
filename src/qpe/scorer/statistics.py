@@ -202,7 +202,8 @@ class ActivationStatsCollector:
         sum4 = (act**4).sum(dim=reduce_dims)
         max_abs = act.abs().amax(dim=reduce_dims)
         std = act.std(dim=reduce_dims)
-        median_abs = act.abs().median(dim=reduce_dims).values
+        abs_per_channel = act.abs().movedim(spec.channel_dim, 0).flatten(1)
+        median_abs = abs_per_channel.median(dim=1).values
 
         return {
             "count": count,
