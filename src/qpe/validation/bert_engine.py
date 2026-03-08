@@ -44,9 +44,10 @@ class BERTValidationEngine(ValidationEngine):
 
         from transformers import AutoModelForSequenceClassification
 
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = AutoModelForSequenceClassification.from_pretrained(
             model_id, torch_dtype=torch.float32
-        )
+        ).to(device)
         model.eval()
 
         accuracy, ce_loss = self._evaluate(model)
@@ -136,9 +137,10 @@ class BERTValidationEngine(ValidationEngine):
         from transformers import AutoModelForSequenceClassification
         from ..utils.model_utils import _quantize_layer
 
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = AutoModelForSequenceClassification.from_pretrained(
             model_id, torch_dtype=torch.float32
-        )
+        ).to(device)
         model.eval()
 
         for layer_name, precision_str in assignment_dict.items():
@@ -166,8 +168,10 @@ class BERTValidationEngine(ValidationEngine):
         total_correct = 0
         total = 0
 
+        device = next(model.parameters()).device
         with torch.no_grad():
             for batch in self._val_dataloader:
+                batch = {k: v.to(device) for k, v in batch.items()}
                 inputs = {k: v for k, v in batch.items() if k != "labels"}
                 out = model(**inputs, labels=batch["labels"])
                 total_loss += out.loss.item() * len(batch["labels"])
