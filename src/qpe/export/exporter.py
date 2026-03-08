@@ -83,10 +83,15 @@ class ConfigurationExporter:
                 assignment_dict, assignment_hash, precision_dist,
                 importance_matrix,
             )
+        elif target == "pytorch":
+            return self._export_pytorch(
+                solver_output, model_id, output_path,
+                assignment_dict, assignment_hash, precision_dist,
+            )
         else:
             raise ValueError(
                 f"Unknown export target '{target}'. "
-                f"Supported: vllm, trtllm, llama_cpp"
+                f"Supported: vllm, trtllm, llama_cpp, pytorch"
             )
 
     def _export_vllm(
@@ -301,6 +306,45 @@ class ConfigurationExporter:
                 "metadata_path": str(metadata_path),
                 "gguf_output": gguf_output,
             },
+            solver_name=solver_output.solver_name,
+            formulation_used=solver_output.formulation_used,
+            qpe_version=self.QPE_VERSION,
+            export_timestamp=datetime.now(timezone.utc).isoformat(),
+            solver_output_hash=assignment_hash,
+        )
+
+    def _export_pytorch(
+        self,
+        solver_output: SolverOutput,
+        model_id: str,
+        output_path: Path,
+        assignment_dict: dict[str, str],
+        assignment_hash: str,
+        precision_dist: dict[str, int],
+    ) -> ExportResult:
+        """
+        Write the precision assignment as a JSON file.
+
+        The JSON maps layer name -> precision string and is the only artifact
+        needed to reconstruct the quantized model with torchao.
+        """
+        config_path = output_path / "quantization_config.json"
+        config_path.write_text(json.dumps(assignment_dict, indent=2), encoding="utf-8")
+
+        log.info("pytorch config written to %s (%d layers)", config_path, len(assignment_dict))
+
+        return ExportResult(
+            target="pytorch",
+            output_path=str(output_path),
+            model_id=model_id,
+            assignment_hash=assignment_hash,
+            average_bitwidth=solver_output.average_bitwidth,
+            total_weight_size_gb=solver_output.total_memory_bytes / 1e9,
+            precision_distribution=precision_dist,
+            kv_cache_dtype=solver_output.kv_cache_dtype,
+            launch_command=f"# Load assignment from {config_path} and apply with torchao",
+            requires_packages=["torchao>=0.3", "transformers>=4.40"],
+            backend_config={"config_path": str(config_path)},
             solver_name=solver_output.solver_name,
             formulation_used=solver_output.formulation_used,
             qpe_version=self.QPE_VERSION,

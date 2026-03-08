@@ -43,6 +43,7 @@ class PipelineConfig(BaseModel):
 
     gpu_spec_name: str | None = None
     target_batch_size: int = 1
+    task: str = "causal_lm"  # "causal_lm" | "sequence_classification"
 
     max_feedback_iterations: int = 5
     wandb_project: str = "qpe"
@@ -160,7 +161,7 @@ class Pipeline:
     #  Stage 1: Setup
     def _setup_stage(self) -> tuple[nn.Module, DataLoader]:
         """Load model and calibration data."""
-        model = load_model(self.config.model_id)
+        model = load_model(self.config.model_id, task=self.config.task)
         dataloader = self.calibration_manager.get_dataloader()
         return model, dataloader
 
@@ -364,11 +365,21 @@ class Pipeline:
 
         model_config = self._get_model_config(model_id)
         num_blocks = model_config.get("num_hidden_layers", len(complete_layers) // 7)
-        hidden_size = model_config.get("hidden_size", 4096)
-        num_kv_heads = model_config.get("num_key_value_heads", 32)
-        head_dim = hidden_size // model_config.get("num_attention_heads", 32)
-        kv_bytes_fp16 = 2 * num_kv_heads * head_dim * 2
-        kv_bytes_fp8 = 2 * num_kv_heads * head_dim * 1
+
+        # Encoder-only models (BERT, RoBERTa, DistilBERT) have no autoregressive
+        # KV cache — set bytes to 0 so the memory budget is not inflated.
+        encoder_only = model_config.get("model_type", "") in (
+            "bert", "roberta", "distilbert", "albert", "electra"
+        )
+        if encoder_only:
+            kv_bytes_fp16 = 0
+            kv_bytes_fp8 = 0
+        else:
+            hidden_size = model_config.get("hidden_size", 4096)
+            num_kv_heads = model_config.get("num_key_value_heads", 32)
+            head_dim = hidden_size // model_config.get("num_attention_heads", 32)
+            kv_bytes_fp16 = 2 * num_kv_heads * head_dim * 2
+            kv_bytes_fp8 = 2 * num_kv_heads * head_dim * 1
 
         return SolverInput(
             layers=complete_layers,

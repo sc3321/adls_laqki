@@ -9,27 +9,30 @@ def load_model(
     dtype: torch.dtype = torch.float16,
     device_map: str = "auto",
     revision: str | None = None,
+    task: str = "causal_lm",
 ) -> PreTrainedModel:
     """
-    Load a HuggingFace model with appropriate device mapping
-    
-    For sensitivity scoring (Hessian computation), caller should override dtype=torch.float32
-    Hessian-vector products accumulate catastrophic rounding error in FP16
-    For all other uses, FP16 is sufficient and halves memory requirements
-    
+    Load a HuggingFace model with appropriate device mapping.
+
     Args:
         model_id: HuggingFace model ID or local path to model directory
         dtype: Torch dtype for model weights
         device_map: Accelerate device map strategy (auto for multi-GPU, cuda:0 for single GPU, cpu for CPU-only)
         revision: Model revision (git commit hash or branch name)
-    
-    Returns:
-        Loaded model in eval mode with gradients enabled for Hessian computation
+        task: "causal_lm" (default) or "sequence_classification"
+
+    For sensitivity scoring (Hessian computation), caller should override dtype=torch.float32.
+    Hessian-vector products accumulate catastrophic rounding error in FP16.
     """
-    from transformers import AutoModelForCausalLM, AutoConfig
-    
+    from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoConfig
+
     config = AutoConfig.from_pretrained(model_id, revision=revision)
-    model = AutoModelForCausalLM.from_pretrained(
+    cls = (
+        AutoModelForSequenceClassification
+        if task == "sequence_classification"
+        else AutoModelForCausalLM
+    )
+    model = cls.from_pretrained(
         model_id,
         config=config,
         torch_dtype=dtype,
@@ -45,10 +48,13 @@ def load_model(
 QUANTIZABLE_MODULE_TYPES = (torch.nn.Linear,)
 
 EXCLUDED_LAYER_PATTERNS = [
-    "embed_tokens",
+    "embed_tokens",     # LLM token embeddings
+    "embeddings",       # BERT token/position/segment embeddings
     "lm_head",
     "norm",
     "rotary_emb",
+    "pooler",           # BERT CLS pooling projection — tiny, highly sensitive
+    "classifier",       # Classification head — must stay FP16
 ]
 
 

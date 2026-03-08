@@ -2,6 +2,7 @@ import logging
 from typing import Dict
 
 import numpy as np
+import torch
 import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
 from transformers import PreTrainedTokenizer
@@ -9,6 +10,15 @@ from transformers import PreTrainedTokenizer
 from .models import CalibrationConfig
 
 log = logging.getLogger(__name__)
+
+
+def _collate_classification(batch):
+    """Rename SST-2's 'label' key to 'labels' expected by HuggingFace models."""
+    from torch.utils.data.dataloader import default_collate
+    collated = default_collate(batch)
+    if "label" in collated:
+        collated["labels"] = collated.pop("label")
+    return collated
 
 
 class CalibrationDataManager:
@@ -36,35 +46,66 @@ class CalibrationDataManager:
         # - Cache tokenized data to config.cache_dir for reuse
         # - If multiple datasets specified, interleave with config.dataset_weights
 
+    def _is_sst2(self) -> bool:
+        return any("sst2" in d.lower() or "sst-2" in d.lower() for d in self.config.datasets)
+
+    def _load_sst2(self, split: str):
+        from datasets import load_dataset
+        ds = load_dataset("glue", "sst2", split=split)
+
+        def tokenize(batch):
+            return self.tokenizer(
+                batch["sentence"],
+                max_length=self.config.sequence_length,
+                truncation=True,
+                padding="max_length",
+            )
+
+        ds = ds.map(tokenize, batched=True, remove_columns=["sentence", "idx"])
+        ds.set_format("torch", columns=["input_ids", "attention_mask", "label"])
+        return ds
+
     def get_dataloader(self, batch_size: int = 4) -> DataLoader:
         """
         Training split DataLoader for SensitivityScorer.
 
-        Returns tokenized calibration samples as a DataLoader.
-        Each batch contains input_ids and attention_mask tensors.
+        For SST-2 (when config.datasets contains "sst2"), returns batches of
+        {"input_ids", "attention_mask", "labels"} using the training split.
 
-        Implementation steps:
-        1. Load datasets from config.datasets using HuggingFace datasets
-        2. Interleave multiple datasets with config.dataset_weights
-        3. Tokenize to config.sequence_length
-        4. Take config.num_samples * (1 - config.validation_split) samples
-        5. Return DataLoader with specified batch_size
+        Takes config.num_samples * (1 - config.validation_split) samples.
         """
+        if self._is_sst2():
+            ds = self._load_sst2("train")
+            n = int(len(ds) * (1 - self.config.validation_split))
+            n = min(n, self.config.num_samples)
+            return DataLoader(
+                ds.select(range(n)),
+                batch_size=batch_size,
+                shuffle=False,
+                collate_fn=_collate_classification,
+            )
         raise NotImplementedError(
-            "CalibrationDataManager.get_dataloader() requires HuggingFace "
-            "datasets. Install: pip install datasets"
+            f"CalibrationDataManager.get_dataloader() is not implemented for "
+            f"datasets={self.config.datasets}. Currently supported: ['sst2']."
         )
 
     def get_validation_dataloader(self, batch_size: int = 4) -> DataLoader:
         """
-        Held-out split DataLoader for ValidationEngine perplexity screening.
+        Held-out validation split DataLoader for ValidationEngine.
 
-        Same format as get_dataloader() but uses the validation split
-        (config.validation_split fraction of total samples).
+        For SST-2, uses the official GLUE validation split (no overlap with training).
         """
+        if self._is_sst2():
+            ds = self._load_sst2("validation")
+            return DataLoader(
+                ds,
+                batch_size=batch_size,
+                shuffle=False,
+                collate_fn=_collate_classification,
+            )
         raise NotImplementedError(
-            "CalibrationDataManager.get_validation_dataloader() requires "
-            "HuggingFace datasets. Install: pip install datasets"
+            f"CalibrationDataManager.get_validation_dataloader() is not implemented for "
+            f"datasets={self.config.datasets}. Currently supported: ['sst2']."
         )
 
     def compute_importance_matrix(self, model: nn.Module) -> Dict[str, np.ndarray]:
